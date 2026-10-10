@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{Interface as _, PCWSTR, PWSTR, w};
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, window_size};
 use crate::{Cookie, Target};
 
 pub(crate) fn supported() -> bool {
@@ -52,8 +52,8 @@ struct Browser {
 }
 
 impl Window {
-    pub(crate) fn open(target: &Target) -> Result<Self> {
-        let hwnd = create_window(&target.title)?;
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
+        let hwnd = create_window(target, available)?;
         let browser = Rc::new(RefCell::new(None));
         let begun = begin_environment(
             hwnd,
@@ -347,7 +347,7 @@ fn fail(hwnd: HWND, error: anyhow::Error) {
 }
 
 /// Registers and creates the standalone Win32 host window with a centered client area.
-fn create_window(title: &str) -> Result<HWND> {
+fn create_window(target: &Target, available: Option<(i32, i32)>) -> Result<HWND> {
     let instance = unsafe { GetModuleHandleW(None) }.context("cannot find the app module")?;
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
@@ -357,11 +357,12 @@ fn create_window(title: &str) -> Result<HWND> {
     };
     unsafe { RegisterClassW(&class) };
 
+    let (width, height) = window_size(target, available);
     let mut bounds = RECT {
         left: 0,
         top: 0,
-        right: WIDTH,
-        bottom: HEIGHT,
+        right: width,
+        bottom: height,
     };
     unsafe { AdjustWindowRectEx(&mut bounds, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE(0)) }
         .context("cannot size the sign-in window")?;
@@ -369,7 +370,7 @@ fn create_window(title: &str) -> Result<HWND> {
     let height = bounds.bottom - bounds.top;
     let x = (unsafe { GetSystemMetrics(SM_CXSCREEN) } - width) / 2;
     let y = (unsafe { GetSystemMetrics(SM_CYSCREEN) } - height) / 2;
-    let title = wide(title);
+    let title = wide(&target.title);
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),

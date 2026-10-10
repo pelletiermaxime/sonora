@@ -163,9 +163,11 @@ pub(crate) fn release_row(
             .flex_col()
             .items_end()
             .cursor_pointer()
-            .on_click(move |_, _, cx| {
+            .on_click(move |_, window, cx| {
                 cx.stop_propagation();
-                review_reader.update(cx, |state, cx| state.open_archives(review_url.clone(), cx));
+                review_reader.update(cx, |state, cx| {
+                    state.open_archives(review_url.clone(), window, cx)
+                });
             })
             .child(
                 div()
@@ -239,8 +241,10 @@ pub(crate) fn release_row(
             true => Text::Title,
             false => Text::Body,
         })
-        .title_press(move |_, _, cx| {
-            archives.update(cx, |state, cx| state.open_archives(source.clone(), cx));
+        .title_press(move |_, window, cx| {
+            archives.update(cx, |state, cx| {
+                state.open_archives(source.clone(), window, cx)
+            });
         })
         .when(availability == ReleaseAvailability::Released, |card| {
             card.play(false, move |_, _, cx| {
@@ -429,9 +433,11 @@ pub(crate) fn empath_row(
                         .small()
                         .ghost()
                         .label(t!("metal-source"))
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             cx.stop_propagation();
-                            archives.update(cx, |state, cx| state.open_archives(url.clone(), cx));
+                            archives.update(cx, |state, cx| {
+                                state.open_archives(url.clone(), window, cx)
+                            });
                         }),
                 ),
         )

@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{Context, Entity, Task};
+use gpui::{Context, Entity, Task, Window};
 use jiff::civil::Date;
 use metal::{
     AccessError, AccessReason, AlbumLibrary, AlbumMatch, AlbumPlays, ArtistMetadata, ArtistStats,
@@ -851,12 +851,24 @@ impl MetalDiscovery {
     }
 
     /// Opens an Archives page for reading, keeping it alive until closed or signed out.
-    pub fn open_archives(&mut self, url: String, cx: &mut Context<Self>) {
+    pub fn open_archives(&mut self, url: String, window: &Window, cx: &mut Context<Self>) {
         if !url.starts_with("https://www.metal-archives.com/") {
             return;
         }
         self.close_reader();
         self.reader_error = None;
+        let available = window.display(cx).map(|display| {
+            let size = display.visible_bounds().size;
+            // Win32 window dimensions are physical pixels; GTK and AppKit use logical units.
+            let scale = match cfg!(target_os = "windows") {
+                true => window.scale_factor(),
+                false => 1.,
+            };
+            (
+                (f32::from(size.width) * scale).round() as i32,
+                (f32::from(size.height) * scale).round() as i32,
+            )
+        });
         let request = self.io.spawn(async { Ok(webview::supported()) });
         self.reader_request = Some(request.abort_handle());
         self.reader_task = Some(cx.spawn(async move |this, cx| {
@@ -865,17 +877,20 @@ impl MetalDiscovery {
                 this.reader_request = None;
                 this.reader_task = None;
                 let opened = match supported {
-                    Ok(true) => webview::Page::open(webview::Target {
-                        url,
-                        landing: "www.metal-archives.com".into(),
-                        domain: "metal-archives.com".into(),
-                        proof: Vec::new(),
-                        title: i18n::lookup("metal-reader-title", None).to_string(),
-                        agent: None,
-                        script: None,
-                        interactive: true,
-                        hidden: false,
-                    }),
+                    Ok(true) => webview::Page::open_on_display(
+                        webview::Target {
+                            url,
+                            landing: "www.metal-archives.com".into(),
+                            domain: "metal-archives.com".into(),
+                            proof: Vec::new(),
+                            title: i18n::lookup("metal-reader-title", None).to_string(),
+                            agent: None,
+                            script: None,
+                            interactive: true,
+                            hidden: false,
+                        },
+                        available,
+                    ),
                     _ => Err(BrowserError::Unavailable.into()),
                 };
                 match opened {

@@ -19,7 +19,7 @@ use objc2_web_kit::{
     WKWebsiteDataStore,
 };
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, window_size};
 use crate::{Cookie, Target};
 
 /// Safari's own user agent. WebKit's default leaves out the `Version/… Safari/…` tail, and
@@ -43,14 +43,15 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    pub(crate) fn open(target: &Target) -> Result<Self> {
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
         let mtm =
             MainThreadMarker::new().context("the sign-in window has to open on the main thread")?;
         let url = NSURL::URLWithString(&NSString::from_str(&target.url))
             .context("cannot parse the sign-in url")?;
+        let (width, height) = window_size(target, available);
         let frame = NSRect::new(
             NSPoint::new(0., 0.),
-            NSSize::new(f64::from(WIDTH), f64::from(HEIGHT)),
+            NSSize::new(f64::from(width), f64::from(height)),
         );
 
         // The view copies the configuration, so the store is read back off the view afterwards.
@@ -101,7 +102,10 @@ impl Window {
         // Closing must not free the window under the `Retained` this struct holds.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str(&target.title));
-        window.setMinSize(NSSize::new(f64::from(MIN_WIDTH), f64::from(MIN_HEIGHT)));
+        window.setMinSize(NSSize::new(
+            f64::from(MIN_WIDTH.min(width)),
+            f64::from(MIN_HEIGHT.min(height)),
+        ));
         window.setContentView(Some(&view));
         window.center();
         // A background scripted window is never looked at. WebKit drives a view in a window that was never

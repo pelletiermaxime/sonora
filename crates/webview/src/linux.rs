@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH, host};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, host, window_size};
 use crate::{Cookie, Target};
 
 /// The sonames to try, newest first. 4.1 and 4.0 differ only in the libsoup they carry, and every
@@ -162,6 +162,7 @@ struct Shared {
 /// One sign-in window, as both threads hold it.
 struct Session {
     target: Target,
+    available: Option<(i32, i32)>,
     state: Mutex<Shared>,
 }
 
@@ -246,10 +247,11 @@ impl Window {
     /// building the window itself takes half a second the first time, and waiting that out would
     /// freeze the click that asked for it. A window that then fails to build reports itself
     /// `closed`, which the caller already reads as a cancelled sign-in.
-    pub(crate) fn open(target: &Target) -> Result<Self> {
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
         let api = api().context("webkit2gtk is not installed")?;
         let session = Arc::new(Session {
             target: target.clone(),
+            available,
             state: Mutex::new(Shared {
                 uri: None,
                 closed: false,
@@ -416,9 +418,12 @@ impl Live {
         }
 
         unsafe { (api.gtk_window_set_title)(window, title.as_ptr()) };
-        unsafe { (api.gtk_window_set_default_size)(window, WIDTH, HEIGHT) };
+        let (width, height) = window_size(&session.target, session.available);
+        unsafe { (api.gtk_window_set_default_size)(window, width, height) };
         unsafe { (api.gtk_window_set_position)(window, GTK_WIN_POS_CENTER) };
-        unsafe { (api.gtk_widget_set_size_request)(window, MIN_WIDTH, MIN_HEIGHT) };
+        unsafe {
+            (api.gtk_widget_set_size_request)(window, MIN_WIDTH.min(width), MIN_HEIGHT.min(height))
+        };
         // The view is floating until the window takes it, and dies with the window.
         unsafe { (api.gtk_container_add)(window, view) };
 

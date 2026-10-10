@@ -141,7 +141,13 @@ pub fn probed() -> Option<i32> {
 impl Page {
     /// Opens the window and starts loading the target url. Must run on the main thread.
     pub fn open(target: Target) -> Result<Self> {
-        let window = platform::Window::open(&target)?;
+        Self::open_on_display(target, None)
+    }
+
+    /// Opens a reading page relative to its owning display's usable width and height.
+    /// Dimensions use the backend's window units; absent bounds keep the default size.
+    pub fn open_on_display(target: Target, available: Option<(i32, i32)>) -> Result<Self> {
+        let window = platform::Window::open(&target, available)?;
         let shown = target.visible();
         Ok(Self {
             target,

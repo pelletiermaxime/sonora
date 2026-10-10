@@ -3,7 +3,7 @@
 //! `poll` from whatever the last read left behind, so the state machine is the same in all of them
 //! and only the call that starts a read differs.
 
-use crate::Cookie;
+use crate::{Cookie, Target};
 
 /// How big the sign-in window opens, and how small it may be dragged. Each backend spells these in
 /// its own toolkit's units.
@@ -11,6 +11,24 @@ pub(crate) const WIDTH: i32 = 520;
 pub(crate) const HEIGHT: i32 = 720;
 pub(crate) const MIN_WIDTH: i32 = 400;
 pub(crate) const MIN_HEIGHT: i32 = 500;
+/// Reading pages use most of the display while leaving room around the window.
+const READING_FRACTION: f64 = 0.8;
+
+/// Sizes reading pages relative to the usable monitor area; other jobs keep their default size.
+pub(crate) fn window_size(target: &Target, available: Option<(i32, i32)>) -> (i32, i32) {
+    let Some((width, height)) = available.filter(|(width, height)| *width > 0 && *height > 0)
+    else {
+        return (WIDTH, HEIGHT);
+    };
+    if target.scripted() || !target.proof.is_empty() {
+        return (WIDTH, HEIGHT);
+    }
+    (
+        ((f64::from(width) * READING_FRACTION).round() as i32).clamp(MIN_WIDTH.min(width), width),
+        ((f64::from(height) * READING_FRACTION).round() as i32)
+            .clamp(MIN_HEIGHT.min(height), height),
+    )
+}
 
 /// The state of one cookie round trip.
 pub(crate) enum Fetch {

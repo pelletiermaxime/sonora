@@ -24,6 +24,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Open Metal Archives album, band, and review pages in a resizable browser using 80% of the
+  available screen width and height.
 - Fullscreen lyrics grow with a large window, up to twice their size, so they no longer look
   small on a big screen. Small windows keep the size they had.
 - Artist headers show your Last.fm artist plays and Metal Archives genre together. Discography
