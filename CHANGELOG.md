@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-10
+
 ### Added
 
 - Discover metal releases by week, with filters for full-length albums, familiar bands, and
@@ -2019,6 +2021,8 @@ Initial release: a native Spotify client with playback, an interactive queue, th
 search, album, playlist, artist and song pages, context menus and adaptive theming.
 
 [unreleased]: https://github.com/sonorahq/sonora/compare/v0.42.2...HEAD
+[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.0...main
+[1.0.0]: https://github.com/pelletiermaxime/sonora/releases/tag/v1.0.0
 [0.42.2]: https://github.com/sonorahq/sonora/compare/v0.42.1...v0.42.2
 [0.42.1]: https://github.com/sonorahq/sonora/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/sonorahq/sonora/compare/v0.41.0...v0.42.0

@@ -641,8 +641,24 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$TAG" --jq .body > notes.md
+          if [[ "$GITHUB_REPOSITORY" == "sonorahq/sonora" ]]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" --jq .body > notes.md
+          else
+            version="${TAG#v}"
+            awk -v heading="## [$version]" '
+              /^## / {
+                if (found) exit
+                if ($0 == heading || index($0, heading " - ") == 1) {
+                  found = 1
+                  next
+                }
+              }
+              found { print }
+              END { if (!found) exit 1 }
+            ' CHANGELOG.md > notes.md
+            test -s notes.md
+          fi
           printf '\n[Code signing policy](https://github.com/%s#code-signing)\n' "$GITHUB_REPOSITORY" >> notes.md
 
       - uses: softprops/action-gh-release@v2

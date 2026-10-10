@@ -1552,20 +1552,20 @@ authorization of the copyright holder.
 
 Used by 18 crate(s):
 
-- [embed 0.42.2](https://crates.io/crates/embed) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [i18n 0.42.2](https://crates.io/crates/i18n) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [icons 0.42.2](https://crates.io/crates/icons) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [input 0.42.2](https://crates.io/crates/input) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [music 0.42.2](https://crates.io/crates/music) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [router 0.42.2](https://crates.io/crates/router) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [sonora 0.42.2](https://crates.io/crates/sonora) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [sonora-metal 0.42.2](https://crates.io/crates/sonora-metal) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [state 0.42.2](https://crates.io/crates/state) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [storage 0.42.2](https://crates.io/crates/storage) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [ui 0.42.2](https://crates.io/crates/ui) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [views 0.42.2](https://crates.io/crates/views) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [webview 0.42.2](https://crates.io/crates/webview) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
-- [widevine 0.42.2](https://crates.io/crates/widevine) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [embed 1.0.0](https://crates.io/crates/embed) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [i18n 1.0.0](https://crates.io/crates/i18n) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [icons 1.0.0](https://crates.io/crates/icons) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [input 1.0.0](https://crates.io/crates/input) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [music 1.0.0](https://crates.io/crates/music) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [router 1.0.0](https://crates.io/crates/router) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [sonora 1.0.0](https://crates.io/crates/sonora) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [sonora-metal 1.0.0](https://crates.io/crates/sonora-metal) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [state 1.0.0](https://crates.io/crates/state) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [storage 1.0.0](https://crates.io/crates/storage) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [ui 1.0.0](https://crates.io/crates/ui) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [views 1.0.0](https://crates.io/crates/views) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [webview 1.0.0](https://crates.io/crates/webview) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
+- [widevine 1.0.0](https://crates.io/crates/widevine) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
 - [ytmusic 0.1.0](https://crates.io/crates/ytmusic) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
 - [zlog 0.1.0](https://crates.io/crates/zlog) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>
 - [ztracing 0.1.0](https://crates.io/crates/ztracing) — Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>; Copyright (C) <year> <name of author>

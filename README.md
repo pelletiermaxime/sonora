@@ -189,8 +189,8 @@ and Windows x86_64 and ARM64 executables and installers. It reuses Rust and scca
 
 - **Build without publishing:** run the `release` workflow manually, select the branch to build,
   and download its artifacts when all jobs finish. Branch builds use the commit hash in filenames.
-- **Publish a version:** after merging and validating the fork, push a new `v*` tag. For example,
-  `v0.42.2-max.1` distinguishes a fork prerelease from upstream's `v0.42.2`. Tags containing a
+- **Publish a version:** after validating the fork, update the workspace version and changelog,
+  then push the matching `v*` tag. The first fork release is `v1.0.0`. Tags containing a
   hyphen are marked as GitHub prereleases. A successful run publishes packages, SHA-256
   checksums, and license notices to this fork's GitHub Releases.
 
