@@ -20,13 +20,13 @@ use windows::Win32::Foundation::{E_POINTER, HINSTANCE, HWND, LPARAM, LRESULT, RE
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-    GetSystemMetrics, IsWindow, MINMAXINFO, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
-    ShowWindow, WINDOW_EX_STYLE, WM_CLOSE, WM_GETMINMAXINFO, WM_NCDESTROY, WM_SIZE, WNDCLASSW,
-    WS_OVERLAPPEDWINDOW,
+    GetSystemMetrics, IsWindow, MINMAXINFO, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
+    SW_SHOW, ShowWindow, WINDOW_EX_STYLE, WM_CLOSE, WM_GETMINMAXINFO, WM_NCDESTROY, WM_SIZE,
+    WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{Interface as _, PCWSTR, PWSTR, w};
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, window_size};
 use crate::{Cookie, Target};
 
 pub(crate) fn supported() -> bool {
@@ -52,22 +52,23 @@ struct Browser {
 }
 
 impl Window {
-    pub(crate) fn open(target: &Target) -> Result<Self> {
-        let hwnd = create_window(&target.title)?;
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
+        let hwnd = create_window(target, available)?;
         let browser = Rc::new(RefCell::new(None));
         let begun = begin_environment(
             hwnd,
             &target.url,
             target.script.clone(),
+            target.interactive,
             Rc::downgrade(&browser),
         );
         if let Err(error) = begun {
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(error);
         }
-        // A scripted window is never looked at. WebView2 renders into a host that was never
+        // A background scripted window is never looked at. WebView2 renders into a host that was never
         // shown all the same, so it stays hidden.
-        if !target.scripted() {
+        if target.visible() {
             let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         }
 
@@ -81,6 +82,16 @@ impl Window {
     /// True once the user closed and destroyed the host window.
     pub(crate) fn closed(&self) -> bool {
         !unsafe { IsWindow(Some(self.hwnd)) }.as_bool()
+    }
+
+    /// Reveals the existing WebView2 host without restarting navigation.
+    pub(crate) fn show(&mut self) {
+        let _ = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
+    }
+
+    /// Hides the host while retaining its WebView2 session.
+    pub(crate) fn hide(&mut self) {
+        let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
     }
 
     pub(crate) fn host(&self) -> Option<String> {
@@ -174,6 +185,7 @@ fn begin_environment(
     hwnd: HWND,
     url: &str,
     script: Option<String>,
+    native_agent: bool,
     browser: Weak<RefCell<Option<Browser>>>,
 ) -> Result<()> {
     let url = url.to_string();
@@ -182,7 +194,9 @@ fn begin_environment(
             let result = result
                 .context("WebView2 could not create an environment")
                 .and_then(|()| environment.context("WebView2 returned no environment"))
-                .and_then(|environment| begin_controller(environment, hwnd, url, script, browser));
+                .and_then(|environment| {
+                    begin_controller(environment, hwnd, url, script, native_agent, browser)
+                });
             if let Err(error) = result {
                 fail(hwnd, error);
             }
@@ -219,6 +233,7 @@ fn begin_controller(
     hwnd: HWND,
     url: String,
     script: Option<String>,
+    native_agent: bool,
     browser: Weak<RefCell<Option<Browser>>>,
 ) -> Result<()> {
     let environment = environment
@@ -237,7 +252,14 @@ fn begin_controller(
                 .context("WebView2 could not create a controller")
                 .and_then(|()| controller.context("WebView2 returned no controller"))
                 .and_then(|controller| {
-                    finish_controller(controller, hwnd, &url, script.as_deref(), &browser)
+                    finish_controller(
+                        controller,
+                        hwnd,
+                        &url,
+                        script.as_deref(),
+                        native_agent,
+                        &browser,
+                    )
                 });
             if let Err(error) = result {
                 fail(hwnd, error);
@@ -255,6 +277,7 @@ fn finish_controller(
     hwnd: HWND,
     url: &str,
     script: Option<&str>,
+    native_agent: bool,
     browser: &Weak<RefCell<Option<Browser>>>,
 ) -> Result<()> {
     let Some(browser) = browser.upgrade() else {
@@ -267,13 +290,15 @@ fn finish_controller(
     }
 
     let view = unsafe { controller.CoreWebView2() }.context("cannot open the sign-in webview")?;
-    let settings = unsafe { view.Settings() }.context("cannot read webview settings")?;
-    let settings = settings
-        .cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2>()
-        .context("the installed WebView2 runtime cannot set a user agent")?;
-    let user_agent = browser_user_agent(&settings)?;
-    unsafe { settings.SetUserAgent(PCWSTR(user_agent.as_ptr())) }
-        .context("cannot set the sign-in user agent")?;
+    if !native_agent {
+        let settings = unsafe { view.Settings() }.context("cannot read webview settings")?;
+        let settings = settings
+            .cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2>()
+            .context("the installed WebView2 runtime cannot set a user agent")?;
+        let user_agent = browser_user_agent(&settings)?;
+        unsafe { settings.SetUserAgent(PCWSTR(user_agent.as_ptr())) }
+            .context("cannot set the sign-in user agent")?;
+    }
     let view2 = view
         .cast::<ICoreWebView2_2>()
         .context("the installed WebView2 runtime cannot read cookies")?;
@@ -322,7 +347,7 @@ fn fail(hwnd: HWND, error: anyhow::Error) {
 }
 
 /// Registers and creates the standalone Win32 host window with a centered client area.
-fn create_window(title: &str) -> Result<HWND> {
+fn create_window(target: &Target, available: Option<(i32, i32)>) -> Result<HWND> {
     let instance = unsafe { GetModuleHandleW(None) }.context("cannot find the app module")?;
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
@@ -332,11 +357,12 @@ fn create_window(title: &str) -> Result<HWND> {
     };
     unsafe { RegisterClassW(&class) };
 
+    let (width, height) = window_size(target, available);
     let mut bounds = RECT {
         left: 0,
         top: 0,
-        right: WIDTH,
-        bottom: HEIGHT,
+        right: width,
+        bottom: height,
     };
     unsafe { AdjustWindowRectEx(&mut bounds, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE(0)) }
         .context("cannot size the sign-in window")?;
@@ -344,7 +370,7 @@ fn create_window(title: &str) -> Result<HWND> {
     let height = bounds.bottom - bounds.top;
     let x = (unsafe { GetSystemMetrics(SM_CXSCREEN) } - width) / 2;
     let y = (unsafe { GetSystemMetrics(SM_CYSCREEN) } - height) / 2;
-    let title = wide(title);
+    let title = wide(&target.title);
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),

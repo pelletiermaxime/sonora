@@ -57,6 +57,7 @@ pub struct Card {
     fill: bool,
     hovered: Option<StyleRefinement>,
     press: Option<Press>,
+    title_press: Option<Press>,
     loading: bool,
     tile: Option<Pixels>,
     play: Option<Press>,
@@ -92,6 +93,7 @@ impl Card {
             fill: true,
             hovered: None,
             press: None,
+            title_press: None,
             loading: false,
             tile: None,
             play: None,
@@ -229,6 +231,15 @@ impl Card {
         self
     }
 
+    /// Makes only the title clickable, keeping artwork and trailing controls independent.
+    pub fn title_press(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.title_press = Some(Box::new(handler));
+        self
+    }
+
     pub fn flat(mut self) -> Self {
         self.fill = false;
         self
@@ -300,6 +311,7 @@ impl RenderOnce for Card {
             fill,
             hovered,
             press,
+            title_press,
             loading,
             tile,
             play,
@@ -454,6 +466,12 @@ impl RenderOnce for Card {
                 })
             })
             .when_some(weight, |this, weight| this.font_weight(weight))
+            .when_some(title_press, |this, press| {
+                this.cursor_pointer().on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    press(event, window, cx);
+                })
+            })
             .when(underline, |this| this.hover(|style| style.underline()))
             .when(hint && !title.is_empty(), |this| {
                 this.tip_label(title.clone(), Perch::Pointer)

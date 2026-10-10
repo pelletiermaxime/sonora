@@ -7,32 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- Fullscreen lyrics grow with a large window, up to twice their size, so they no longer look
-  small on a big screen. Small windows keep the size they had.
-- On Windows, the minimize, maximize, restore and close buttons now use Windows' own icons, so
-  they match other Windows apps.
-
-### Fixed
-
-- YouTube Music and Apple Music artist pages now list the artist's whole discography instead
-  of stopping at ten albums and ten singles, and Deezer artist pages no longer stop at 50.
-- Apple Music artist pages now list the artist's live albums and compilations, which were
-  missing even though they opened fine from search.
-- Albums on YouTube Music and Deezer artist pages now name the artist, and a card with no
-  artist to show no longer ends its line in a stray dot.
-- Artist names on Apple Music album cards now open the artist, in search, charts, home, the
-  library and on artist pages.
-- Top songs on Apple Music charts now show and play as songs instead of album cards.
-- The Appears on row of an artist page no longer sits flush against the Show all button.
-- Seeking in the last few seconds of a song now moves within that song, instead of jumping into
-  the next one or doing nothing.
-- The fullscreen controls blur away as they hide, instead of leaving the top of the seek bar cut
-  off for the last moment.
-- Signing in to Spotify on Windows on ARM no longer fails with "Spotify turned down the
-  sign-in".
-- Spotify and Deezer accounts now show profile picture in Settings instead of initials.
+- Discover metal releases by week, with filters for full-length albums, familiar bands, and
+  bands that are new to you based on your Last.fm listening history.
+- Explore empath's top metal bands by genre and similar bands on artist pages, then find them
+  in your active music provider.
+- Browse Metal Archives discographies by albums, singles and EPs, or other releases, with
+  cover art, review scores, upcoming release dates, and playback through your music provider.
+  Open band, album, and review pages in Sonora's built-in browser.
+- See your personal Last.fm artist and album play counts, and browse searchable all-time
+  rankings in Discover's Your listening tab with links to artist and album pages.
+  Album totals stay updated from your recent listening after the initial import.
 
 ## [0.42.2] - 2026-10-07
 

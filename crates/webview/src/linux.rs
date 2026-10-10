@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH, host};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, host, window_size};
 use crate::{Cookie, Target};
 
 /// The sonames to try, newest first. 4.1 and 4.0 differ only in the libsoup they carry, and every
@@ -114,6 +114,7 @@ symbols! {
     gtk_widget_set_size_request: unsafe extern "C" fn(Ptr, c_int, c_int),
     gtk_container_add: unsafe extern "C" fn(Ptr, Ptr),
     gtk_widget_show_all: unsafe extern "C" fn(Ptr),
+    gtk_widget_hide: unsafe extern "C" fn(Ptr),
     gtk_widget_destroy: unsafe extern "C" fn(Ptr),
     g_signal_connect_data: unsafe extern "C" fn(Ptr, *const c_char, Callback, Ptr, Option<Notify>, c_int) -> c_ulong,
     g_timeout_add: unsafe extern "C" fn(c_uint, Source, Ptr) -> c_uint,
@@ -154,11 +155,14 @@ struct Shared {
     load: Option<CString>,
     /// The poll side wants the window closed.
     dismissed: bool,
+    /// The poll side wants the hidden window revealed without navigating it again.
+    visibility: Option<bool>,
 }
 
 /// One sign-in window, as both threads hold it.
 struct Session {
     target: Target,
+    available: Option<(i32, i32)>,
     state: Mutex<Shared>,
 }
 
@@ -243,10 +247,11 @@ impl Window {
     /// building the window itself takes half a second the first time, and waiting that out would
     /// freeze the click that asked for it. A window that then fails to build reports itself
     /// `closed`, which the caller already reads as a cancelled sign-in.
-    pub(crate) fn open(target: &Target) -> Result<Self> {
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
         let api = api().context("webkit2gtk is not installed")?;
         let session = Arc::new(Session {
             target: target.clone(),
+            available,
             state: Mutex::new(Shared {
                 uri: None,
                 closed: false,
@@ -254,6 +259,7 @@ impl Window {
                 wanted: false,
                 load: None,
                 dismissed: false,
+                visibility: None,
             }),
         });
         gtk(api).submit(session.clone())?;
@@ -289,6 +295,16 @@ impl Window {
             return;
         };
         self.session.state.lock().unwrap().load = Some(url);
+    }
+
+    /// Asks the GTK thread to reveal this existing window on its next tick.
+    pub(crate) fn show(&mut self) {
+        self.session.state.lock().unwrap().visibility = Some(true);
+    }
+
+    /// Asks the GTK thread to hide this window while keeping its WebKit engine running.
+    pub(crate) fn hide(&mut self) {
+        self.session.state.lock().unwrap().visibility = Some(false);
     }
 
     /// Asks the GTK thread to take the window down. It is gone within a tick.
@@ -368,7 +384,13 @@ impl Live {
             CString::new(session.target.title.as_str()).context("the window title is not text")?;
         let uri = CString::new(format!("https://{}/", session.target.landing))
             .context("the landing host is not text")?;
-        let agent = CString::new(session.target.agent.as_deref().unwrap_or(USER_AGENT))
+        let agent = session
+            .target
+            .agent
+            .as_deref()
+            .or_else(|| (!session.target.interactive).then_some(USER_AGENT))
+            .map(CString::new)
+            .transpose()
             .context("the user agent is not text")?;
 
         // The context is the whole session: dropping it at the end takes the cookies with it.
@@ -391,12 +413,17 @@ impl Live {
             )
         };
         let settings = unsafe { (api.webkit_web_view_get_settings)(view) };
-        unsafe { (api.webkit_settings_set_user_agent)(settings, agent.as_ptr()) };
+        if let Some(agent) = agent {
+            unsafe { (api.webkit_settings_set_user_agent)(settings, agent.as_ptr()) };
+        }
 
         unsafe { (api.gtk_window_set_title)(window, title.as_ptr()) };
-        unsafe { (api.gtk_window_set_default_size)(window, WIDTH, HEIGHT) };
+        let (width, height) = window_size(&session.target, session.available);
+        unsafe { (api.gtk_window_set_default_size)(window, width, height) };
         unsafe { (api.gtk_window_set_position)(window, GTK_WIN_POS_CENTER) };
-        unsafe { (api.gtk_widget_set_size_request)(window, MIN_WIDTH, MIN_HEIGHT) };
+        unsafe {
+            (api.gtk_widget_set_size_request)(window, MIN_WIDTH.min(width), MIN_HEIGHT.min(height))
+        };
         // The view is floating until the window takes it, and dies with the window.
         unsafe { (api.gtk_container_add)(window, view) };
 
@@ -417,9 +444,8 @@ impl Live {
         if let Some(source) = &session.target.script {
             inject(api, view, source);
         }
-        // A scripted window is never looked at. GTK only needs it mapped for the user to see it,
-        // and WebKit loads a page into an unmapped view all the same, so it stays hidden.
-        if !session.target.scripted() {
+        // Background scripts remain hidden; interactive scripts need a visible window.
+        if session.target.visible() {
             unsafe { (api.gtk_widget_show_all)(window) };
         }
         unsafe { (api.webkit_web_view_load_uri)(view, url.as_ptr()) };
@@ -456,8 +482,15 @@ impl Live {
         state.uri = unsafe { text((api.webkit_web_view_get_uri)(self.view)) };
         let wanted = std::mem::take(&mut state.wanted);
         let load = state.load.take();
+        let visibility = state.visibility.take();
         // `collected` locks the same state, so the read is started with the lock let go.
         drop(state);
+        if let Some(visible) = visibility {
+            match visible {
+                true => unsafe { (api.gtk_widget_show_all)(self.window) },
+                false => unsafe { (api.gtk_widget_hide)(self.window) },
+            }
+        }
         if let Some(url) = load {
             unsafe { (api.webkit_web_view_load_uri)(self.view, url.as_ptr()) };
         }

@@ -8,15 +8,17 @@ use gpui::{
 };
 
 use crate::chrome::Chrome;
+use crate::chrome::metal::DiscographyTab;
 use crate::shared::cells;
 use i18n::t;
 use music::{SavedArtist, Track};
-use state::{AppSettings, ArtistDetail, Origin, Playback, Sonora};
+use state::{AppSettings, ArtistDetail, Io, MetalArtist, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
-    Button, Card, Deck, MIN_CONTENT, Mode, Picker, Pin, PinKind, Popovers, Popup, Scrollbar,
-    Scroller, Skeleton, TableDelegate, TableEvent, TableState, Text, scrolled, snapped, table,
+    Button, Card, Deck, MIN_CONTENT, Mode, Notice, Picker, Pin, PinKind, Popovers, Popup,
+    Scrollbar, Scroller, Skeleton, TabBar, TableDelegate, TableEvent, TableState, Text, scrolled,
+    snapped, table,
 };
 
 use crate::chrome::tools;
@@ -56,6 +58,9 @@ impl Tracks for ArtistTracks {
 
 pub(crate) struct ArtistView {
     detail: Entity<ArtistDetail>,
+    metal: Entity<MetalArtist>,
+    metal_tab: DiscographyTab,
+    similar_expanded: bool,
     playback: Entity<Playback>,
     playback_status: PlaybackStatus,
     artist_id: Option<String>,
@@ -102,6 +107,32 @@ impl ArtistView {
         let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id));
         let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
         let settings = Sonora::global(cx).settings.clone();
+        let client = Sonora::global(cx).metal.read(cx).client();
+        let metal = cx.new(|cx| MetalArtist::new(client, Io::global(cx), cx));
+        cx.observe(&metal, |this, metal, cx| {
+            let metal = metal.read(cx);
+            if !metal.loading {
+                if let Some(band) = metal.band.as_ref()
+                    && metal.archives_id() == Some(band.id.as_str())
+                    && let Some(provider_id) = this.detail.read(cx).id().map(str::to_owned)
+                {
+                    let band = metal::EmpathBand {
+                        id: band.id.clone(),
+                        name: band.name.clone(),
+                    };
+                    Sonora::global(cx).empath.clone().update(cx, |state, cx| {
+                        state.remember_archives(&provider_id, band, cx);
+                    });
+                }
+                this.sync_similar(cx);
+            }
+            cx.notify();
+        })
+        .detach();
+        let empath = Sonora::global(cx).empath.clone();
+        cx.observe(&empath, |_, _, cx| cx.notify()).detach();
+        let discovery = Sonora::global(cx).metal.clone();
+        cx.observe(&discovery, |_, _, cx| cx.notify()).detach();
         let saved = settings.read(cx).table(SECTION);
         let sorting = settings.read(cx).sorting(SECTION);
         let mode = settings.read(cx).view_or(SECTION, Mode::List);
@@ -153,10 +184,24 @@ impl ArtistView {
         .detach();
 
         cx.observe(&detail, |this, detail, cx| {
+            let name = detail
+                .read(cx)
+                .artist()
+                .map(|artist| artist.name.clone())
+                .unwrap_or_default();
+            let empath = Sonora::global(cx).empath.clone();
+            let id = detail
+                .read(cx)
+                .id()
+                .and_then(|provider_id| empath.read(cx).archives_id(provider_id, &name));
+            this.metal.update(cx, |metal, cx| metal.open(&name, id, cx));
+            this.sync_similar(cx);
             let artist_id = detail.read(cx).id().map(str::to_owned);
             if this.artist_id != artist_id {
                 this.artist_id = artist_id;
                 this.release_filter = ReleaseFilter::All;
+                this.metal_tab = DiscographyTab::Main;
+                this.similar_expanded = false;
                 this.releases_expanded = false;
                 this.release_padding = Pixels::ZERO;
                 this.release_padding_offset = Pixels::ZERO;
@@ -215,6 +260,9 @@ impl ArtistView {
         Self {
             popular: Rc::new(detail.read(cx).tracks().to_vec()),
             detail,
+            metal,
+            metal_tab: DiscographyTab::Main,
+            similar_expanded: false,
             playback,
             playback_status: current_playback,
             artist_id,
@@ -242,6 +290,30 @@ impl ArtistView {
             release_tile: Pixels::ZERO,
             rails: Vec::new(),
         }
+    }
+
+    /// Synchronizes source identity on provider navigation as well as Archives data updates.
+    fn sync_similar(&mut self, cx: &mut Context<Self>) {
+        let detail = self.detail.read(cx);
+        let name = detail
+            .artist()
+            .map(|artist| artist.name.clone())
+            .unwrap_or_default();
+        let empath = Sonora::global(cx).empath.clone();
+        let known = detail
+            .id()
+            .and_then(|provider_id| empath.read(cx).archives_id(provider_id, &name));
+        let metal = self.metal.read(cx);
+        if metal.loading && known.is_none() {
+            return;
+        }
+        let id = known.or_else(|| {
+            if metal.name != name {
+                return None;
+            }
+            metal.band.as_ref().map(|band| band.id.clone())
+        });
+        empath.update(cx, |state, cx| state.load_similar(&name, id, false, cx));
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {
@@ -282,6 +354,29 @@ impl ArtistView {
                 let value = cells::count(count);
                 t!("artist-monthly-listeners", count = count, value = &value)
             });
+        let discovery = Sonora::global(cx).metal.read(cx);
+        let plays = artist
+            .filter(|_| !discovery.history.source.is_empty())
+            .map(|artist| discovery.playcount(&artist.name));
+        let genre = self
+            .metal
+            .read(cx)
+            .band
+            .as_ref()
+            .filter(|band| {
+                artist.is_some_and(|artist| {
+                    metal::normalize(&band.name) == metal::normalize(&artist.name)
+                })
+            })
+            .map(|band| band.genre.clone())
+            .filter(|genre| !genre.is_empty());
+        let has_meta = listeners.is_some() || plays.is_some() || genre.is_some();
+        let meta = HeroMetaStrip::new()
+            .when_some(listeners, |meta, listeners| meta.text(listeners))
+            .when_some(plays, |meta, plays| {
+                meta.text(t!("metal-personal-plays", count = plays))
+            })
+            .when_some(genre, |meta, genre| meta.text(genre));
         let overflow = self.saved_artist(cx).map(|artist| {
             Picker::icon("artist-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
@@ -324,9 +419,7 @@ impl ArtistView {
             .pin(pin)
             .cover(cover)
             .eyebrow(t!("artist-eyebrow"))
-            .when_some(listeners, |hero, listeners| {
-                hero.meta(HeroMetaStrip::new().text(listeners))
-            })
+            .when(has_meta, |hero| hero.meta(meta))
             .actions(actions)
             .circle()
             .into_any_element()
@@ -890,6 +983,352 @@ impl ArtistView {
         Some(div().pt_6().child(card).into_any_element())
     }
 
+    /// Similarity comes from shared Archives reviewers, independently of provider suggestions.
+    fn empath_similar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let empath = Sonora::global(cx).empath.clone();
+        let state = empath.read(cx);
+        if state.name.is_empty() || state.name != self.metal.read(cx).name {
+            return div().into_any_element();
+        }
+        let theme = *cx.theme();
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .mt_6()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(theme.text(Text::Title))
+                            .font_weight(FontWeight::BOLD)
+                            .child(t!("empath-similar-title")),
+                    )
+                    .child(
+                        Button::new("empath-refresh-similar")
+                            .small()
+                            .outline()
+                            .label(t!("metal-refresh"))
+                            .disabled(state.similar_loading)
+                            .on_click(move |_, _, cx| {
+                                empath.update(cx, |state, cx| {
+                                    let name = state.name.clone();
+                                    let id = state
+                                        .similar
+                                        .as_ref()
+                                        .map(|similar| similar.band.id.clone());
+                                    state.load_similar(&name, id, true, cx);
+                                });
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(theme.text(Text::Small))
+                    .text_color(theme.muted_foreground)
+                    .child(t!("empath-similar-help")),
+            );
+        let empath = Sonora::global(cx).empath.clone();
+        if state.similar_loading {
+            section = section.child(Notice::new(
+                t!("empath-loading-similar"),
+                t!("empath-cache-help"),
+            ));
+        }
+        if state.similar_failed {
+            section = section
+                .child(Notice::new(t!("empath-load-failed"), t!("empath-retry-help")).failed());
+        }
+        if state.similar_stale {
+            section = section.child(crate::chrome::metal::notice(t!("empath-stale"), cx));
+        }
+        if let Some(similar) = &state.similar {
+            section = section.child(crate::chrome::metal::empath_credit(
+                &similar.updated,
+                format!("https://www.furia.com/em/band{}.html", similar.band.id),
+            ));
+            let shown = match self.similar_expanded {
+                true => similar.bands.len(),
+                false => similar.bands.len().min(LISTED_MAX),
+            };
+            for (index, rank) in similar.bands.iter().take(shown).enumerate() {
+                section = section.child(crate::chrome::metal::empath_row(
+                    ("empath-similar-band", index),
+                    rank,
+                    index + 1,
+                    true,
+                    &empath,
+                    cx,
+                ));
+            }
+            if similar.bands.len() > LISTED_MAX {
+                section = section.child(
+                    Button::new("empath-expand-similar")
+                        .small()
+                        .ghost()
+                        .label(match self.similar_expanded {
+                            true => t!("empath-show-less"),
+                            false => t!("empath-show-all", count = similar.bands.len()),
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.similar_expanded = !this.similar_expanded;
+                            cx.notify();
+                        })),
+                );
+            }
+            if similar.bands.is_empty() {
+                section = section.child(crate::chrome::metal::notice(t!("empath-no-similar"), cx));
+            }
+        } else if state.identities.len() > 1 {
+            section = section.child(crate::chrome::metal::notice(
+                t!("empath-choose-identity"),
+                cx,
+            ));
+            for (index, band) in state.identities.iter().enumerate() {
+                let picked = empath.clone();
+                let id = band.id.clone();
+                section = section.child(
+                    Button::new(("empath-identity", index))
+                        .small()
+                        .outline()
+                        .label(t!(
+                            "empath-identity",
+                            artist = band.name.clone(),
+                            id = id.clone()
+                        ))
+                        .on_click(move |_, _, cx| {
+                            picked.update(cx, |state, cx| {
+                                let name = state.name.clone();
+                                state.load_similar(&name, Some(id.clone()), false, cx);
+                            })
+                        }),
+                );
+            }
+        } else if !state.similar_loading && !state.similar_failed {
+            section = section.child(crate::chrome::metal::notice(t!("empath-no-similar"), cx));
+        }
+        section.into_any_element()
+    }
+
+    fn metal_discography(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::chrome::metal::{
+            ReleaseContext, fetch_error, notice, release_cover, release_row,
+        };
+        let state = self.metal.read(cx);
+        let theme = *cx.theme();
+        let discovery = Sonora::global(cx).metal.clone();
+        let source = state
+            .band
+            .as_ref()
+            .map(|band| band.url.clone())
+            .unwrap_or_else(|| metal::archives_search_url(&state.name));
+        let mut section = div().pt_6().flex().flex_col().gap_2().child(
+            div()
+                .text_size(theme.text(Text::Title))
+                .font_weight(FontWeight::BOLD)
+                .child(t!("metal-discography")),
+        );
+        let refresh = state.loaded;
+        let loaded = self.metal.clone();
+        section = section.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(
+                    Button::new("metal-discography-load")
+                        .small()
+                        .primary()
+                        .label(match refresh {
+                            true => t!("metal-refresh"),
+                            false => t!("metal-load"),
+                        })
+                        .tooltip("metal-cache-policy")
+                        .disabled(state.loading || state.dates_loading || state.name.is_empty())
+                        .on_click(move |_, _, cx| {
+                            loaded.update(cx, |state, cx| state.load(refresh, cx))
+                        }),
+                )
+                .child(
+                    Button::new("metal-open-archives")
+                        .small()
+                        .ghost()
+                        .label(t!("metal-open-archives"))
+                        .on_click(move |_, _, cx| cx.open_url(&source)),
+                ),
+        );
+        section = section
+            .when(state.loading, |section| {
+                section.child(notice(t!("metal-loading"), cx))
+            })
+            .when(state.dates_loading, |section| {
+                section.child(notice(t!("metal-checking-dates"), cx))
+            })
+            .when(discovery.read(cx).album_plays_loading, |section| {
+                section.child(notice(t!("metal-loading-album-plays"), cx))
+            })
+            .when(discovery.read(cx).album_plays_failed, |section| {
+                let minutes = discovery
+                    .read(cx)
+                    .album_plays_retry_at
+                    .map(|at| {
+                        at.saturating_sub(jiff::Timestamp::now().as_second().max(0) as u64)
+                            .div_ceil(60)
+                    })
+                    .filter(|minutes| *minutes > 0);
+                section.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(notice(
+                            match minutes {
+                                Some(minutes) => {
+                                    t!("metal-album-plays-rate-limited", minutes = minutes)
+                                }
+                                None => t!("metal-album-plays-failed"),
+                            },
+                            cx,
+                        ))
+                        .child(
+                            Button::new("metal-retry-album-plays")
+                                .small()
+                                .outline()
+                                .label(t!("metal-retry-album-plays"))
+                                .on_click(|_, _, cx| {
+                                    Sonora::global(cx)
+                                        .metal
+                                        .clone()
+                                        .update(cx, |state, cx| state.load_album_history(cx))
+                                }),
+                        ),
+                )
+            })
+            .when_some(state.dates_error.as_ref(), |section, error| {
+                section.child(notice(fetch_error(error), cx))
+            })
+            .when(state.expired, |section| {
+                section.child(notice(t!("metal-cache-expired"), cx))
+            })
+            .when_some(state.error.as_ref(), |section, error| {
+                section.child(notice(fetch_error(error), cx))
+            })
+            .when_some(
+                discovery.read(cx).reader_error.as_ref(),
+                |section, error| section.child(notice(fetch_error(error), cx)),
+            );
+        if !state.loaded {
+            return section
+                .child(notice(t!("metal-load-help"), cx))
+                .into_any_element();
+        }
+        if let Some(band) = &state.band {
+            let changed = self.metal.clone();
+            let provider_id = self.detail.read(cx).id().map(str::to_owned);
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(format!("{} / {} / {}", band.name, band.genre, band.country))
+                    .child(
+                        Button::new("metal-change-band")
+                            .small()
+                            .ghost()
+                            .label(t!("metal-change-band"))
+                            .on_click(move |_, _, cx| {
+                                if let Some(provider_id) = provider_id.as_ref() {
+                                    Sonora::global(cx).empath.clone().update(cx, |state, cx| {
+                                        state.forget_archives(provider_id, cx)
+                                    });
+                                }
+                                changed.update(cx, |state, cx| state.change_band(cx))
+                            }),
+                    ),
+            );
+            section = section.child(
+                TabBar::new("metal-discography-tabs")
+                    .max_w(self.width)
+                    .items(DiscographyTab::TABS.into_iter().map(|tab| {
+                        Button::new(tab.key())
+                            .small()
+                            .outline()
+                            .selected(self.metal_tab == tab)
+                            .label(i18n::lookup(tab.key(), None))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.metal_tab = tab;
+                                cx.notify();
+                            }))
+                    })),
+            );
+            let albums = self.detail.read(cx).albums();
+            let mut shown = 0;
+            for group in DiscographyTab::GROUPS {
+                if self.metal_tab != DiscographyTab::All && self.metal_tab != group {
+                    continue;
+                }
+                let releases = state
+                    .releases
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, release)| group.includes(release))
+                    .collect::<Vec<_>>();
+                if releases.is_empty() {
+                    continue;
+                }
+                shown += releases.len();
+                section = section.child(
+                    div()
+                        .pt_4()
+                        .pb_2()
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(theme.text(Text::Title))
+                        .child(i18n::lookup(group.key(), None)),
+                );
+                for (index, release) in releases {
+                    section = section.child(release_row(
+                        ("metal-discography-release", index),
+                        release,
+                        release_cover(release, albums),
+                        ReleaseContext::Artist(discovery.read(cx).album_plays(release)),
+                        &discovery,
+                        cx,
+                    ));
+                }
+            }
+            if shown == 0 && !state.releases.is_empty() {
+                section = section.child(notice(t!("metal-no-tab-releases"), cx));
+            }
+            if state.releases.is_empty() && !state.loading && state.error.is_none() {
+                section = section.child(notice(t!("metal-no-discography"), cx));
+            }
+        } else if !state.candidates.is_empty() {
+            section = section.child(notice(t!("metal-select-band"), cx));
+            for (index, band) in state.candidates.iter().enumerate() {
+                let band = band.clone();
+                let selected = self.metal.clone();
+                section = section.child(
+                    Button::new(("metal-band-candidate", index))
+                        .outline()
+                        .label(format!("{} / {} / {}", band.name, band.genre, band.country))
+                        .on_click(move |_, _, cx| {
+                            selected.update(cx, |state, cx| state.choose(band.clone(), cx))
+                        }),
+                );
+            }
+        } else if !state.loading && state.error.is_none() {
+            section = section.child(notice(t!("metal-no-band"), cx));
+        }
+        section.into_any_element()
+    }
+
     fn about_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.about_open {
             return None;
@@ -1042,7 +1481,9 @@ impl Render for ArtistView {
                 )
             }))
             .child(tracks)
+            .child(self.metal_discography(cx))
             .children(grid)
+            .child(self.empath_similar(cx))
             .children(rails)
             .children(about)
             .when(release_padding > Pixels::ZERO, |this| {
@@ -1055,6 +1496,14 @@ impl Render for ArtistView {
             .child(page)
             .when_some(track_menu, |this, menu| this.child(menu))
             .children(self.about_dialog(cx))
+            .children(crate::chrome::metal::empath_modal(
+                &Sonora::global(cx).empath,
+                cx,
+            ))
+            .children(crate::chrome::metal::album_modal(
+                &Sonora::global(cx).metal,
+                cx,
+            ))
     }
 }
 

@@ -19,7 +19,7 @@ use objc2_web_kit::{
     WKWebsiteDataStore,
 };
 
-use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH};
+use crate::native::{Fetch, MIN_HEIGHT, MIN_WIDTH, Reading, window_size};
 use crate::{Cookie, Target};
 
 /// Safari's own user agent. WebKit's default leaves out the `Version/… Safari/…` tail, and
@@ -35,7 +35,7 @@ pub(crate) struct Window {
     view: Retained<WKWebView>,
     cookies: Retained<WKHTTPCookieStore>,
     fetch: Rc<RefCell<Fetch>>,
-    /// Whether the window was put on the screen. A scripted window never is, and an invisible
+    /// Whether the window was put on the screen. A background scripted window never is, and an invisible
     /// window would otherwise read as one the user had closed.
     shown: bool,
     /// Whether `close` has been called. This is what `closed` answers for a hidden window.
@@ -43,14 +43,15 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    pub(crate) fn open(target: &Target) -> Result<Self> {
+    pub(crate) fn open(target: &Target, available: Option<(i32, i32)>) -> Result<Self> {
         let mtm =
             MainThreadMarker::new().context("the sign-in window has to open on the main thread")?;
         let url = NSURL::URLWithString(&NSString::from_str(&target.url))
             .context("cannot parse the sign-in url")?;
+        let (width, height) = window_size(target, available);
         let frame = NSRect::new(
             NSPoint::new(0., 0.),
-            NSSize::new(f64::from(WIDTH), f64::from(HEIGHT)),
+            NSSize::new(f64::from(width), f64::from(height)),
         );
 
         // The view copies the configuration, so the store is read back off the view afterwards.
@@ -60,7 +61,13 @@ impl Window {
         let view = unsafe {
             WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &configuration)
         };
-        unsafe { view.setCustomUserAgent(Some(&NSString::from_str(USER_AGENT))) };
+        if let Some(agent) = target
+            .agent
+            .as_deref()
+            .or_else(|| (!target.interactive).then_some(USER_AGENT))
+        {
+            unsafe { view.setCustomUserAgent(Some(&NSString::from_str(agent))) };
+        }
         if let Some(source) = &target.script {
             // The view copied the configuration, so the script goes into the copy it kept.
             let script = unsafe {
@@ -95,12 +102,15 @@ impl Window {
         // Closing must not free the window under the `Retained` this struct holds.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&NSString::from_str(&target.title));
-        window.setMinSize(NSSize::new(f64::from(MIN_WIDTH), f64::from(MIN_HEIGHT)));
+        window.setMinSize(NSSize::new(
+            f64::from(MIN_WIDTH.min(width)),
+            f64::from(MIN_HEIGHT.min(height)),
+        ));
         window.setContentView(Some(&view));
         window.center();
-        // A scripted window is never looked at. WebKit drives a view in a window that was never
+        // A background scripted window is never looked at. WebKit drives a view in a window that was never
         // ordered front all the same, so it stays off the screen.
-        let shown = !target.scripted();
+        let shown = target.visible();
         if shown {
             window.makeKeyAndOrderFront(None);
         }
@@ -123,6 +133,18 @@ impl Window {
             true => !self.window.isVisible() && !self.window.isMiniaturized(),
             false => *self.dismissed.borrow(),
         }
+    }
+
+    /// Reveals a hidden window while retaining its WebKit session.
+    pub(crate) fn show(&mut self) {
+        self.window.makeKeyAndOrderFront(None);
+        self.shown = true;
+    }
+
+    /// Hides this window without closing its WebKit session.
+    pub(crate) fn hide(&mut self) {
+        self.window.orderOut(None);
+        self.shown = false;
     }
 
     pub(crate) fn host(&self) -> Option<String> {

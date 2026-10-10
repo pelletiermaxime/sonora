@@ -12,7 +12,7 @@ pub(crate) fn supported() -> bool {
 pub(crate) struct Window;
 
 impl Window {
-    pub(crate) fn open(_target: &Target) -> Result<Self> {
+    pub(crate) fn open(_target: &Target, _available: Option<(i32, i32)>) -> Result<Self> {
         bail!("this platform has no sign-in window yet")
     }
 
@@ -29,6 +29,10 @@ impl Window {
     }
 
     pub(crate) fn load(&self, _url: &str) {}
+
+    pub(crate) fn show(&mut self) {}
+
+    pub(crate) fn hide(&mut self) {}
 
     pub(crate) fn close(&self) {}
 }
