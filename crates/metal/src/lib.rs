@@ -982,8 +982,8 @@ impl Client {
         self.preview(&album_library_key(user))
     }
 
-    /// Fetches overall personal album plays in pages, once per account per 24 hours.
-    /// Only a validated complete chart replaces the saved snapshot; failures propagate.
+    /// Imports the overall chart once, then refreshes only recently played albums each day.
+    /// Failed batches retain the prior snapshot; unresolved albums are retried on later syncs.
     pub async fn album_library(&self, user: &str, api_key: &str) -> Result<AlbumLibrary> {
         let key = album_library_key(user);
         if let Some(cached) = self.fresh(&key, DAY)? {
@@ -993,9 +993,17 @@ impl Client {
         if let Some(cached) = self.fresh(&key, DAY)? {
             return Ok(cached);
         }
+        if let Some(snapshot) = self.snapshot::<AlbumLibrary>(&key)? {
+            let mut library = snapshot.value;
+            self.refresh_album_library(user, api_key, &mut library)
+                .await?;
+            self.save_at(&key, &library, library.fetched_at)?;
+            return Ok(library);
+        }
         let mut library = AlbumLibrary {
             artists: HashMap::new(),
             fetched_at: now(),
+            pending: Vec::new(),
         };
         let mut seen = HashSet::new();
         let mut expected = None;
@@ -1039,6 +1047,103 @@ impl Client {
         }
         self.save_at(&key, &library, library.fetched_at)?;
         Ok(library)
+    }
+
+    /// Uses recent listens to select albums, then replaces their totals rather than adding plays.
+    async fn refresh_album_library(
+        &self,
+        user: &str,
+        api_key: &str,
+        library: &mut AlbumLibrary,
+    ) -> Result<()> {
+        let until = now();
+        let yesterday = jiff::Zoned::now()
+            .checked_sub(jiff::Span::new().days(1))?
+            .start_of_day()?
+            .timestamp()
+            .as_second()
+            .max(0) as u64;
+        // A longer absence extends the range to the last successful import or refresh.
+        let from = library.fetched_at.min(yesterday);
+        let mut albums = HashMap::new();
+        for (artist, title) in &library.pending {
+            albums.insert(
+                (normalize(artist), normalize(title)),
+                (artist.clone(), title.clone()),
+            );
+        }
+        let mut expected = None;
+        let mut scrobbles = 0;
+        let mut page = 1;
+        loop {
+            let data = self
+                .lastfm(
+                    "user.getRecentTracks",
+                    api_key,
+                    &[
+                        ("user", user.into()),
+                        ("limit", "200".into()),
+                        ("page", page.to_string()),
+                        ("from", from.saturating_sub(1).to_string()),
+                        ("to", until.saturating_add(1).to_string()),
+                    ],
+                )
+                .await?;
+            let recent = albums::RecentAlbumPage::parse(user, page, from, until, &data)?;
+            let bounds = (recent.pages, recent.total);
+            if expected.is_some_and(|expected| expected != bounds) {
+                bail!("Last.fm recent tracks changed during pagination");
+            }
+            expected = Some(bounds);
+            scrobbles += recent.scrobbles;
+            for (artist, title) in recent.albums {
+                albums
+                    .entry((normalize(&artist), normalize(&title)))
+                    .or_insert((artist, title));
+            }
+            if page >= recent.pages.max(1) {
+                if scrobbles != recent.total {
+                    bail!("incomplete Last.fm recent tracks");
+                }
+                break;
+            }
+            if recent.scrobbles == 0 {
+                bail!("incomplete Last.fm recent tracks pagination");
+            }
+            page += 1;
+        }
+        let mut albums = albums.into_values().collect::<Vec<_>>();
+        albums.sort();
+        for (artist, title) in albums {
+            let data = self
+                .lastfm(
+                    "album.getInfo",
+                    api_key,
+                    &[
+                        ("username", user.into()),
+                        ("artist", artist.clone()),
+                        ("album", title.clone()),
+                        ("autocorrect", "0".into()),
+                    ],
+                )
+                .await;
+            let resolved = match data {
+                Ok(data) => library.refresh_album(&artist, &title, &data)?,
+                Err(error)
+                    if error
+                        .downcast_ref::<LastfmError>()
+                        .is_some_and(|code| matches!(code.0, 6 | 7)) =>
+                {
+                    false
+                }
+                Err(error) => return Err(error),
+            };
+            if !resolved {
+                library.defer_album(&artist, &title);
+            }
+        }
+        library.fetched_at = until;
+        Ok(())
     }
 
     async fn lastfm(

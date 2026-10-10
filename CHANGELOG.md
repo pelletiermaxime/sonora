@@ -11,8 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Build this fork's desktop release packages with the inherited GitHub Actions workflow,
   including unsigned Flatpak bundles without upstream's signing key.
-- See your personal Last.fm album plays in artist discographies. Your album history loads once
-  in the background, stays cached for 24 hours, and is shared across artist pages.
+- See your personal Last.fm album plays in artist discographies. Import your album totals once,
+  then refresh recently played albums daily in the background, with catch-up after time away.
 - Explore empath's top metal bands by genre in Discover and its similar bands on artist pages.
   See the source snapshot date and reviewer statistics, then find bands in your music provider.
 - Browse metal releases by day in Discover, with genres and familiar bands ranked using your

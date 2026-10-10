@@ -137,7 +137,7 @@ metal-album-personal-plays = { $count ->
    *[other] { $count } personal album plays on Last.fm
     }
 metal-album-plays-unavailable = Album plays unavailable on Last.fm
-metal-loading-album-plays = Loading your Last.fm album history in the background...
+metal-loading-album-plays = Updating your Last.fm album plays in the background...
 metal-album-plays-failed = Album play counts are temporarily unavailable. Cached counts remain visible; try again shortly.
 metal-album-plays-rate-limited = Last.fm is limiting requests. Try again in { $minutes ->
     [one] 1 minute.

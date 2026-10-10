@@ -40,8 +40,11 @@ Compared with upstream, this fork adds:
   singles and EPs, see prominent review averages, and open album and review pages in the
   built-in browser. Matching provider covers and hover play controls keep playback in Sonora.
 - **Personal listening stats:** show artist plays and genre in the artist header, plus personal
-  album plays from a shared Last.fm library cached for 24 hours. Generic title matching handles
-  punctuation, subtitles, and small spelling differences while leaving ambiguous matches unavailable.
+  album plays from a shared Last.fm library imported once. Daily refreshes fetch recent scrobbles
+  and update totals only for the albums you listened to, catching up after time away. Generic
+  title matching handles punctuation, subtitles, and small spelling differences while leaving
+  ambiguous matches unavailable. Edits to older scrobbles are reflected when that album is
+  played again; daily sync does not reread the full historical chart.
 - **Metal genre and similar-band browsing:** explore [empath](https://www.furia.com/em/index.html)
   genre rankings in Discover and related bands on artist pages, with source snapshot dates.
 - **Upcoming releases:** fetch exact dates for recent releases in the background and show

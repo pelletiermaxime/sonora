@@ -229,7 +229,7 @@ impl MetalDiscovery {
             .map(|library| library.plays(&release.band.name, &release.title))
     }
 
-    /// Loads one shared account chart; changing artist pages does not restart pagination.
+    /// Imports or updates the shared album totals; artist navigation does not restart the sync.
     pub fn load_album_history(&mut self, cx: &mut Context<Self>) {
         if self.album_plays_loading
             || self

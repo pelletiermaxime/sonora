@@ -18,6 +18,9 @@ pub struct AlbumPlays {
 pub struct AlbumLibrary {
     pub artists: HashMap<String, HashMap<String, ListenedAlbum>>,
     pub fetched_at: u64,
+    /// Unresolved metadata is retried without discarding other albums' daily updates.
+    #[serde(default)]
+    pub(super) pending: Vec<(String, String)>,
 }
 
 /// Preserves a source spelling; conflicting canonical chart records have an unknown count.
@@ -39,11 +42,24 @@ impl AlbumLibrary {
         }
         let count = match match_album_title(
             title,
-            albums.into_iter().flat_map(|albums| {
-                albums
-                    .values()
-                    .map(|album| (album.title.as_str(), album.count))
-            }),
+            albums
+                .into_iter()
+                .flat_map(|albums| {
+                    albums
+                        .values()
+                        .map(|album| (album.title.as_str(), album.count))
+                })
+                .chain(
+                    self.pending
+                        .iter()
+                        .filter(|(pending_artist, pending_title)| {
+                            normalize(pending_artist) == normalize(artist)
+                                && albums.is_none_or(|albums| {
+                                    !albums.contains_key(&title_key(pending_title))
+                                })
+                        })
+                        .map(|(_, title)| (title.as_str(), None)),
+                ),
         ) {
             AlbumMatch::Matched(count) => count,
             AlbumMatch::Missing => Some(0),
@@ -71,6 +87,76 @@ impl AlbumLibrary {
                 title,
                 count: Some(count),
             });
+    }
+
+    /// Replaces a personal total; valid but unresolved metadata returns false for later retry.
+    pub(super) fn refresh_album(
+        &mut self,
+        artist: &str,
+        title: &str,
+        value: &Value,
+    ) -> Result<bool> {
+        let album = &value["album"];
+        if !album.is_object() {
+            bail!("invalid Last.fm album metadata");
+        }
+        let returned_artist = album["artist"]
+            .as_str()
+            .context("Last.fm album metadata has no artist")?;
+        let returned_title = album["name"]
+            .as_str()
+            .context("Last.fm album metadata has no title")?;
+        if normalize(returned_artist) != normalize(artist)
+            || title_key(returned_title) != title_key(title)
+        {
+            return Ok(false);
+        }
+        let Some(count) = album.get("userplaycount").and_then(number) else {
+            return Ok(false);
+        };
+        // Pending spellings can also collide with a newly resolved canonical identity.
+        let ambiguous = self.pending.iter().any(|(pending_artist, pending_title)| {
+            normalize(pending_artist) == normalize(artist)
+                && title_key(pending_title) == title_key(title)
+                && normalize(pending_title) != normalize(title)
+        });
+        let kept = self
+            .artists
+            .entry(normalize(artist))
+            .or_default()
+            .entry(title_key(title))
+            .or_insert_with(|| ListenedAlbum {
+                title: title.to_owned(),
+                count: Some(count),
+            });
+        if kept.count.is_some() {
+            kept.count = match !ambiguous && normalize(&kept.title) == normalize(title) {
+                true => Some(count),
+                false => None,
+            };
+        }
+        self.pending.retain(|(pending_artist, pending_title)| {
+            normalize(pending_artist) != normalize(artist)
+                || normalize(pending_title) != normalize(title)
+        });
+        Ok(true)
+    }
+
+    /// Preserves known counts and records unresolved new albums as unknown rather than zero.
+    pub(super) fn defer_album(&mut self, artist: &str, title: &str) {
+        if let Some(kept) = self
+            .artists
+            .get_mut(&normalize(artist))
+            .and_then(|albums| albums.get_mut(&title_key(title)))
+            && normalize(&kept.title) != normalize(title)
+        {
+            kept.count = None;
+        }
+        if !self.pending.iter().any(|(kept_artist, kept_title)| {
+            normalize(kept_artist) == normalize(artist) && normalize(kept_title) == normalize(title)
+        }) {
+            self.pending.push((artist.to_owned(), title.to_owned()));
+        }
     }
 }
 
@@ -170,6 +256,66 @@ impl AlbumPage {
         }
         Ok(Self {
             albums,
+            pages,
+            total,
+        })
+    }
+}
+
+/// One bounded recent-scrobble page; now-playing rows never identify completed album listens.
+pub(super) struct RecentAlbumPage {
+    pub albums: Vec<(String, String)>,
+    pub scrobbles: u64,
+    pub pages: u64,
+    pub total: u64,
+}
+
+impl RecentAlbumPage {
+    /// Checks the account and pagination, retaining only completed plays in the requested range.
+    pub fn parse(user: &str, page: u64, from: u64, to: u64, value: &Value) -> Result<Self> {
+        let data = &value["recenttracks"];
+        let attr = &data["@attr"];
+        let owner = attr["user"]
+            .as_str()
+            .context("Last.fm recent tracks have no user")?;
+        if owner.trim().to_lowercase() != user.trim().to_lowercase()
+            || number(&attr["page"]) != Some(page)
+        {
+            bail!("Last.fm recent tracks account or page mismatch");
+        }
+        let pages =
+            number(&attr["totalPages"]).context("Last.fm recent tracks have no page count")?;
+        let total = number(&attr["total"]).context("Last.fm recent tracks have no total")?;
+        if pages > 1000 || (total > 0 && pages == 0) {
+            bail!("invalid Last.fm recent tracks pagination");
+        }
+        let rows = data["track"]
+            .as_array()
+            .context("invalid Last.fm recent tracks")?;
+        let mut albums = Vec::new();
+        let mut scrobbles = 0;
+        for row in rows {
+            if row["@attr"]["nowplaying"].as_str() == Some("true") {
+                continue;
+            }
+            let at = number(&row["date"]["uts"]).context("Last.fm scrobble has no timestamp")?;
+            scrobbles += 1;
+            if at < from || at > to {
+                continue;
+            }
+            let artist = row["artist"]["#text"]
+                .as_str()
+                .context("Last.fm scrobble has no artist")?;
+            let title = row["album"]["#text"]
+                .as_str()
+                .context("Last.fm scrobble has no album field")?;
+            if !artist.trim().is_empty() && !title.trim().is_empty() {
+                albums.push((artist.to_owned(), title.to_owned()));
+            }
+        }
+        Ok(Self {
+            albums,
+            scrobbles,
             pages,
             total,
         })
