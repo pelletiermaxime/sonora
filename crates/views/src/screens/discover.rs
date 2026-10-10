@@ -1,16 +1,21 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, Context, Entity, FontWeight, PathPromptOptions, Render, ScrollHandle, Task, Window,
-    div,
-};
+use gpui::{AnyElement, Context, Entity, FontWeight, Render, ScrollHandle, Window, div};
 use i18n::t;
 use metal::normalize;
-use state::MetalDiscovery;
-use ui::{ActiveTheme as _, Button, Deck, Input, Scrollbar, Scroller, Text};
+use state::{Empath, MetalDiscovery, Sonora};
+use ui::{
+    ActiveTheme as _, Button, Deck, Input, MenuItem, Notice, Picker, Popovers, Scrollbar, Scroller,
+    TabBar, Text,
+};
 
-use crate::chrome::metal::{album_modal, notice, release_row};
+use crate::chrome::Chrome;
+
+use crate::chrome::metal::{
+    ReleaseContext, album_modal, empath_credit, empath_modal, empath_row, fetch_error, notice,
+    release_row,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// Filters are local and never trigger another Archives request.
@@ -18,28 +23,34 @@ enum Filter {
     All,
     Albums,
     Familiar,
+    NewToYou,
 }
 
 #[derive(Clone)]
 /// Timeline headings and indices keep the large release listing virtualized.
 enum Row {
-    Section(&'static str),
     Day(String),
     Release(usize),
 }
 
-/// A locally filtered release timeline, with familiar bands before chronological browsing.
+/// A chronological release timeline with local album, history, and recommendation filters.
 pub(crate) struct DiscoverView {
     discovery: Entity<MetalDiscovery>,
+    empath: Entity<Empath>,
+    genres: bool,
+    style: usize,
+    genre_rows: Rc<Vec<usize>>,
+    popovers: Popovers,
     input: Entity<Input>,
     filter: Filter,
     rows: Rc<Vec<Row>>,
     scrollbar: Entity<Scrollbar>,
-    picker: Option<Task<()>>,
 }
 
 impl DiscoverView {
     pub(crate) fn new(discovery: Entity<MetalDiscovery>, cx: &mut Context<Self>) -> Self {
+        let chrome = Chrome::entity(cx);
+        cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
         let input = cx.new(|cx| {
             Input::new("metal-filter-hint", cx)
                 .icon("icons/search.svg")
@@ -50,8 +61,15 @@ impl DiscoverView {
             cx.notify();
         })
         .detach();
+        let empath = Sonora::global(cx).empath.clone();
+        cx.observe(&empath, |this, _, cx| {
+            this.rebuild_genres(cx);
+            cx.notify();
+        })
+        .detach();
         cx.observe(&input, |this, _, cx| {
             this.rebuild(cx);
+            this.rebuild_genres(cx);
             this.rewind(cx);
             cx.notify();
         })
@@ -59,17 +77,219 @@ impl DiscoverView {
         let me = cx.entity_id();
         Self {
             discovery,
+            empath,
+            genres: false,
+            style: 0,
+            genre_rows: Rc::new(Vec::new()),
+            popovers: Popovers::default(),
             input,
-            filter: Filter::All,
+            filter: Filter::Albums,
             rows: Rc::new(Vec::new()),
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
-            picker: None,
         }
     }
 
     pub(crate) fn load(&mut self, cx: &mut Context<Self>) {
-        self.discovery.update(cx, |state, cx| state.load(cx));
+        self.empath
+            .update(cx, |state, cx| state.load_genres(false, cx));
+        if !self.genres {
+            self.discovery.update(cx, |state, cx| state.load(cx));
+        }
         self.rebuild(cx);
+        self.rebuild_genres(cx);
+    }
+
+    /// Genres are filtered locally, without fetching one page per style or band.
+    fn rebuild_genres(&mut self, cx: &Context<Self>) {
+        let query = normalize(self.input.read(cx).text());
+        self.genre_rows = Rc::new(
+            self.empath
+                .read(cx)
+                .genres
+                .as_ref()
+                .and_then(|genres| genres.styles.get(self.style))
+                .map(|style| {
+                    style
+                        .bands
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, rank)| {
+                            normalize(&rank.band.name).contains(&query).then_some(index)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+    }
+
+    fn page_tabs(&self, cx: &Context<Self>) -> AnyElement {
+        TabBar::new("discover-sections")
+            .items(
+                [(false, "empath-new-releases"), (true, "empath-top-genres")]
+                    .into_iter()
+                    .map(|(genres, key)| {
+                        Button::new(key)
+                            .small()
+                            .label(i18n::lookup(key, None))
+                            .selected(self.genres == genres)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.genres = genres;
+                                this.popovers.close();
+                                this.rewind(cx);
+                                this.load(cx);
+                                cx.notify();
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn genre_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let genres = self.empath.read(cx).genres.as_ref();
+        let rank = genres
+            .and_then(|genres| genres.styles.get(self.style))
+            .and_then(|style| {
+                self.genre_rows
+                    .get(index)
+                    .and_then(|index| style.bands.get(*index))
+            });
+        match rank {
+            Some(rank) => empath_row(
+                ("empath-genre-band", index),
+                rank,
+                self.genre_rows[index] + 1,
+                false,
+                &self.empath,
+                cx,
+            ),
+            None => div().into_any_element(),
+        }
+    }
+
+    fn genres_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        let state = self.empath.read(cx);
+        let style = state
+            .genres
+            .as_ref()
+            .and_then(|genres| genres.styles.get(self.style));
+        let mut header = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .pb_6()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(theme.text(Text::Display))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("nav-discover")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("empath-genres-description")),
+                            ),
+                    )
+                    .child(
+                        Button::new("empath-refresh-genres")
+                            .small()
+                            .outline()
+                            .icon("icons/refresh-cw.svg")
+                            .label(t!("metal-refresh"))
+                            .disabled(state.genres_loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.empath
+                                    .update(cx, |state, cx| state.load_genres(true, cx));
+                            })),
+                    ),
+            )
+            .child(self.page_tabs(cx));
+        if let Some(style) = style {
+            let styles = &state.genres.as_ref().expect("style has a source").styles;
+            header = header.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Picker::new("empath-style", &self.popovers, style.name.clone())
+                            .left()
+                            .width(Picker::REGULAR)
+                            .items(styles.iter().enumerate().map(|(index, style)| {
+                                MenuItem::new(("empath-style-choice", index), style.name.clone())
+                                    .checked(self.style == index)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.style = index;
+                                        this.rebuild_genres(cx);
+                                        this.rewind(cx);
+                                        cx.notify();
+                                    }))
+                            })),
+                    )
+                    .child(empath_credit(
+                        &state.genres.as_ref().expect("style has a source").updated,
+                        "https://www.furia.com/em/bands-style.html".into(),
+                    )),
+            );
+        }
+        header = header
+            .child(self.input.clone())
+            .child(
+                div()
+                    .text_size(theme.text(Text::Small))
+                    .text_color(theme.muted_foreground)
+                    .child(t!("empath-ranking-help")),
+            )
+            .when(style.is_some(), |header| {
+                header.child(
+                    div()
+                        .text_size(theme.text(Text::Small))
+                        .text_color(theme.muted_foreground)
+                        .child(t!("empath-band-count", count = self.genre_rows.len())),
+                )
+            });
+        let rows = self.genre_rows.len();
+        Scroller::new("empath-genres-page", &self.scrollbar)
+            .px(theme.metrics.inset)
+            .py(theme.metrics.inset)
+            .max_w(Chrome::content(window, cx))
+            .child(header)
+            .when(state.genres_loading, |page| {
+                page.child(Notice::new(t!("empath-loading-genres"), t!("empath-cache-help")).mb_4())
+            })
+            .when(state.genres_failed, |page| {
+                page.child(
+                    Notice::new(t!("empath-load-failed"), t!("empath-retry-help"))
+                        .failed()
+                        .mb_4(),
+                )
+            })
+            .when(state.genres_stale, |page| {
+                page.child(notice(t!("empath-stale"), cx))
+            })
+            .when(
+                style.is_some() && !state.genres_loading && rows == 0,
+                |page| page.child(notice(t!("empath-no-filter-match"), cx)),
+            )
+            .child(
+                Deck::new("empath-genre-bands")
+                    .rows((0..rows).map(|_| theme.metrics.row * 2. + theme.metrics.pad * 2.))
+                    .draw(cx.processor(|this, index, _, cx| this.genre_row(index, cx))),
+            )
+            .into_any_element()
     }
 
     fn rewind(&mut self, cx: &mut Context<Self>) {
@@ -77,32 +297,13 @@ impl DiscoverView {
             .update(cx, |bar, _| bar.scroll().set_offset(gpui::Point::default()));
     }
 
-    fn import(&mut self, cx: &mut Context<Self>) {
-        let chosen = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        self.picker = Some(cx.spawn(async move |this, cx| {
-            let selected = chosen.await;
-            this.update(cx, |this, cx| {
-                this.picker = None;
-                if let Ok(Ok(Some(paths))) = selected
-                    && let Some(path) = paths.into_iter().next()
-                {
-                    this.discovery
-                        .update(cx, |state, cx| state.import(path, cx));
-                    this.rewind(cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
     fn rebuild(&mut self, cx: &Context<Self>) {
         let state = self.discovery.read(cx);
+        if state.history.artists.is_empty()
+            && matches!(self.filter, Filter::Familiar | Filter::NewToYou)
+        {
+            self.filter = Filter::Albums;
+        }
         let query = normalize(self.input.read(cx).text());
         let mut indices: Vec<_> = state
             .releases
@@ -113,6 +314,16 @@ impl DiscoverView {
                     Filter::All => true,
                     Filter::Albums => release.kind == "Full-length",
                     Filter::Familiar => state.playcount(&release.band.name) > 0,
+                    Filter::NewToYou => {
+                        release.kind == "Full-length"
+                            && state.playcount(&release.band.name) <= 5
+                            && state
+                                .info
+                                .get(&normalize(&release.band.name))
+                                .is_some_and(|info| {
+                                    info.listeners.is_some_and(|listeners| listeners >= 25_000)
+                                })
+                    }
                 };
                 (allowed
                     && normalize(&format!(
@@ -135,39 +346,7 @@ impl DiscoverView {
                 })
                 .then_with(|| a.band.name.cmp(&b.band.name))
         });
-        let mut familiar: Vec<_> = indices
-            .iter()
-            .copied()
-            .filter(|index| state.playcount(&state.releases[*index].band.name) > 0)
-            .collect();
-        familiar.sort_by_key(|index| {
-            std::cmp::Reverse(state.playcount(&state.releases[*index].band.name))
-        });
         let mut rows = Vec::new();
-        if !familiar.is_empty() {
-            rows.push(Row::Section("metal-familiar"));
-            rows.extend(familiar.into_iter().take(12).map(Row::Release));
-        }
-        let discoveries: Vec<_> = indices
-            .iter()
-            .copied()
-            .filter(|index| {
-                let release = &state.releases[*index];
-                release.kind == "Full-length"
-                    && state.playcount(&release.band.name) <= 5
-                    && state
-                        .info
-                        .get(&normalize(&release.band.name))
-                        .is_some_and(|info| {
-                            info.listeners.is_some_and(|listeners| listeners >= 25_000)
-                                && info.tags.iter().any(|tag| normalize(tag).contains("metal"))
-                        })
-            })
-            .collect();
-        if !discoveries.is_empty() {
-            rows.push(Row::Section("metal-worth-checking"));
-            rows.extend(discoveries.into_iter().take(12).map(Row::Release));
-        }
         let mut date = String::new();
         for index in indices {
             let release = &state.releases[index];
@@ -186,6 +365,8 @@ impl DiscoverView {
             Some(Row::Release(release)) => release_row(
                 ("metal-release", index),
                 &self.discovery.read(cx).releases[*release],
+                None,
+                ReleaseContext::Discover,
                 &self.discovery,
                 cx,
             ),
@@ -195,16 +376,11 @@ impl DiscoverView {
                 .items_center()
                 .font_weight(FontWeight::BOLD)
                 .text_size(theme.text(Text::Title))
-                .child(date.clone())
-                .into_any_element(),
-            Some(Row::Section(key)) => div()
-                .h_full()
-                .flex()
-                .items_center()
-                .font_weight(FontWeight::BOLD)
-                .text_size(theme.text(Text::Title))
-                .text_color(theme.primary)
-                .child(i18n::lookup(key, None))
+                .child(
+                    date.parse::<jiff::civil::Date>()
+                        .map(|date| date.strftime("%A, %B %-d").to_string())
+                        .unwrap_or_else(|_| date.clone()),
+                )
                 .into_any_element(),
             None => div().into_any_element(),
         }
@@ -212,174 +388,268 @@ impl DiscoverView {
 }
 
 impl Render for DiscoverView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.genres {
+            let page = self.genres_page(window, cx);
+            return div()
+                .relative()
+                .size_full()
+                .child(page)
+                .children(empath_modal(&self.empath, cx));
+        }
         let theme = *cx.theme();
+        let width = Chrome::content(window, cx);
         let state = self.discovery.read(cx);
         let loading = state.loading;
+        let verifying = state.verifying();
+        let loaded = state.has_results();
         let error = state.error.clone();
-        let failed = error.is_some();
-        let history_error = state.history_error.clone();
-        let enrichment_error = state.enrichment_error.clone();
+        let reader_error = state.reader_error.clone();
+        let expired = state.expired;
+        let personal = !state.history.artists.is_empty();
         let enriching = state.enriching;
-        let count = state.releases.len();
-        let artists = state.history.artists.len();
-        let range = format!("{} - {}", state.from, state.to);
-        let source = state.history.source.clone();
-        let imported = state.imported;
+        let (checked, candidates) = state.recommendation_progress();
+        let account = state.lastfm_user().map(str::to_owned);
+        let history_failed = state.history_error.is_some();
+        let enrichment_failed = state.enrichment_error.is_some();
+        let range = format!(
+            "{} – {}",
+            state.from.strftime("%b %-d, %Y"),
+            state.to.strftime("%b %-d, %Y")
+        );
+        let visible = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::Release(_)))
+            .count();
         let total = state.release_total;
-        let mut filters = div().flex().flex_wrap().gap_2();
-        for (index, (filter, key)) in [
-            (Filter::All, "metal-all"),
+        let count = state.releases.len();
+        let tabs = [
             (Filter::Albums, "metal-full-lengths"),
+            (Filter::All, "metal-all"),
             (Filter::Familiar, "metal-known"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            filters = filters.child(
-                Button::new(("metal-filter", index))
-                    .small()
-                    .outline()
-                    .selected(self.filter == filter)
-                    .label(i18n::lookup(key, None))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.filter = filter;
-                        this.rebuild(cx);
-                        this.rewind(cx);
-                        cx.notify();
-                    })),
-            );
-        }
+            (Filter::NewToYou, "metal-new-to-you"),
+        ];
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .pb_6()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(theme.text(Text::Display))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(t!("nav-discover")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("metal-discover-description")),
+                            ),
+                    )
+                    .child(
+                        Button::new("metal-refresh")
+                            .small()
+                            .outline()
+                            .icon("icons/refresh-cw.svg")
+                            .label(t!("metal-refresh"))
+                            .tooltip("metal-discover-cache-policy")
+                            .disabled(loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.discovery.update(cx, |state, cx| state.fetch(true, cx));
+                            })),
+                    ),
+            )
+            .child(self.page_tabs(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("metal-previous-week")
+                            .small()
+                            .outline()
+                            .icon("icons/chevron-left.svg")
+                            .tooltip("common-previous")
+                            .disabled(loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.discovery.update(cx, |state, cx| state.shift(-7, cx));
+                                this.rewind(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .text_size(theme.text(Text::Large))
+                            .child(range),
+                    )
+                    .child(
+                        Button::new("metal-next-week")
+                            .small()
+                            .outline()
+                            .icon("icons/chevron-right.svg")
+                            .tooltip("common-next")
+                            .disabled(loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.discovery.update(cx, |state, cx| state.shift(7, cx));
+                                this.rewind(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("metal-today")
+                            .small()
+                            .ghost()
+                            .label(t!("metal-this-week"))
+                            .disabled(loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.discovery.update(cx, |state, cx| state.today(cx));
+                                this.rewind(cx);
+                            })),
+                    ),
+            )
+            .child(
+                TabBar::new("metal-discover-filters").max_w(width).items(
+                    tabs.into_iter()
+                        .filter(|(filter, _)| {
+                            personal || matches!(filter, Filter::Albums | Filter::All)
+                        })
+                        .map(|(filter, key)| {
+                            Button::new(key)
+                                .small()
+                                .selected(self.filter == filter)
+                                .label(i18n::lookup(key, None))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.filter = filter;
+                                    this.rebuild(cx);
+                                    this.rewind(cx);
+                                    cx.notify();
+                                }))
+                        }),
+                ),
+            )
+            .child(self.input.clone())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .when(loaded, |this| {
+                        this.child(
+                            div()
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("metal-visible-count", count = visible)),
+                        )
+                    })
+                    .when_some(account.filter(|_| personal), |this, account| {
+                        this.child(
+                            div()
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("metal-personalized", user = account)),
+                        )
+                    }),
+            )
+            .when(self.filter == Filter::NewToYou, |this| {
+                this.child(
+                    div()
+                        .text_size(theme.text(Text::Small))
+                        .text_color(theme.muted_foreground)
+                        .child(t!("metal-new-to-you-help")),
+                )
+            })
+            .when(self.filter == Filter::Familiar, |this| {
+                this.child(
+                    div()
+                        .text_size(theme.text(Text::Small))
+                        .text_color(theme.muted_foreground)
+                        .child(t!("metal-familiar-help")),
+                )
+            });
         let rows = self.rows.clone();
         let page = Scroller::new("discover-page", &self.scrollbar)
             .px(theme.metrics.inset)
             .py(theme.metrics.inset)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .pb_4()
-                    .child(
-                        div()
-                            .text_size(theme.text(Text::Display))
-                            .font_weight(FontWeight::BOLD)
-                            .child(t!("nav-discover")),
+            .child(header)
+            .when(loading, |this| {
+                this.child(
+                    Notice::new(
+                        t!("metal-discover-loading"),
+                        match verifying {
+                            true => t!("metal-discover-verifying"),
+                            false => t!("metal-discover-cache-policy"),
+                        },
                     )
-                    .child(
-                        div()
-                            .text_size(theme.text(Text::Small))
-                            .text_color(theme.muted_foreground)
-                            .child(t!("metal-discover-description")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Button::new("metal-previous-week")
-                                    .small()
-                                    .icon("icons/chevron-left.svg")
-                                    .label(t!("common-previous"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.discovery.update(cx, |state, cx| state.shift(-7, cx));
-                                        this.rewind(cx);
-                                    })),
-                            )
-                            .child(range)
-                            .child(
-                                Button::new("metal-next-week")
-                                    .small()
-                                    .icon("icons/chevron-right.svg")
-                                    .label(t!("common-next"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.discovery.update(cx, |state, cx| state.shift(7, cx));
-                                        this.rewind(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("metal-today")
-                                    .small()
-                                    .label(t!("metal-this-week"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.discovery.update(cx, |state, cx| state.today(cx));
-                                        this.rewind(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("metal-import")
-                                    .small()
-                                    .outline()
-                                    .label(t!("metal-import"))
-                                    .tooltip("metal-import-help")
-                                    .disabled(loading)
-                                    .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_3()
-                            .text_size(theme.text(Text::Small))
-                            .text_color(theme.muted_foreground)
-                            .child(t!("metal-summary", count = count, artists = artists))
-                            .when(!source.is_empty(), |this| {
-                                this.child(t!("metal-history-source", source = source))
-                            }),
-                    )
-                    .when(imported && total <= count, |this| {
-                        this.child(
-                            div()
-                                .text_size(theme.text(Text::Small))
-                                .text_color(theme.muted_foreground)
-                                .child(t!("metal-imported")),
-                        )
-                    })
-                    .when(total > count, |this| {
-                        this.child(
-                            div()
-                                .text_size(theme.text(Text::Small))
-                                .text_color(theme.muted_foreground)
-                                .child(t!("metal-partial", count = count, total = total)),
-                        )
-                    })
-                    .child(self.input.clone())
-                    .child(filters)
-                    .child(
-                        Button::new("metal-enrich")
-                            .small()
-                            .outline()
-                            .tooltip("metal-request-policy")
-                            .label(match enriching {
-                                true => t!("metal-enriching"),
-                                false => t!("metal-enrich"),
-                            })
-                            .disabled(loading || enriching || artists == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.discovery.update(cx, |state, cx| state.enrich(cx))
-                            })),
-                    ),
-            )
-            .when(loading, |this| this.child(notice(t!("metal-loading"), cx)))
-            .when_some(error, |this, error| {
-                this.child(notice(error, cx)).child(
-                    Button::new("metal-retry")
-                        .label(t!("metal-retry"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.discovery.update(cx, |state, cx| state.retry(cx))
-                        })),
+                    .icon("icons/disc-3.svg")
+                    .mb_4(),
                 )
             })
-            .when_some(history_error, |this, error| this.child(notice(error, cx)))
-            .when_some(enrichment_error, |this, error| {
-                this.child(notice(error, cx))
+            .when_some(error.as_ref(), |this, error| {
+                this.child(
+                    Notice::new(t!("metal-discover-failed"), fetch_error(error))
+                        .failed()
+                        .mb_4(),
+                )
             })
-            .when(!loading && !failed && self.rows.is_empty(), |this| {
-                this.child(notice(t!("metal-no-releases"), cx))
+            .when_some(reader_error.as_ref(), |this, error| {
+                this.child(notice(fetch_error(error), cx))
             })
+            .when(expired && error.is_some(), |this| {
+                this.child(notice(t!("metal-discover-stale"), cx))
+            })
+            .when(history_failed || enrichment_failed, |this| {
+                this.child(notice(t!("metal-personalization-failed"), cx))
+            })
+            .when(total > count, |this| {
+                this.child(notice(
+                    t!("metal-partial", count = count, total = total),
+                    cx,
+                ))
+            })
+            .when(self.filter == Filter::NewToYou, |this| {
+                this.child(notice(
+                    t!(
+                        "metal-personalization-progress",
+                        checked = checked,
+                        total = candidates
+                    ),
+                    cx,
+                ))
+                .when(enriching, |this| {
+                    this.child(notice(t!("metal-personalizing"), cx))
+                })
+            })
+            .when(
+                loaded
+                    && !loading
+                    && !enriching
+                    && error.is_none()
+                    && self.rows.is_empty()
+                    && (self.filter != Filter::NewToYou
+                        || (checked == candidates && !history_failed)),
+                |this| {
+                    this.child(
+                        Notice::new(t!("metal-no-releases"), t!("metal-discover-empty-help"))
+                            .icon("icons/search.svg"),
+                    )
+                },
+            )
             .child(
                 Deck::new("metal-discover-timeline")
                     .rows(rows.iter().map(|row| match row {

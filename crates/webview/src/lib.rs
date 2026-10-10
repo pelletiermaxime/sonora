@@ -50,29 +50,42 @@ use unsupported as platform;
 /// carry at least one of the `proof` names.
 ///
 /// Two kinds of window fit this. A sign-in window is shown and carries no script: the user works
-/// through the provider's pages and the proof cookies are the session. A scripted window is
-/// hidden and runs `script` on every page it loads, which does its work and leaves the answer in
-/// a cookie named in `proof`; nothing about it is a sign-in, and the retry that recovers a
-/// skipped hand-off is left out.
+/// through the provider's pages and the proof cookies are the session. A scripted window runs
+/// `script` on every page it loads and leaves the answer in a cookie named in `proof`. It is
+/// hidden unless `interactive` requests user verification. Scripted windows do not retry the
+/// navigation to recover a sign-in hand-off. A reading window has no script and an empty proof
+/// list; it stays open until the user closes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub url: String,
     pub landing: String,
     pub domain: String,
+    /// Cookies completing a sign-in or scripted capture. Empty keeps a reading window open.
     pub proof: Vec<String>,
     pub title: String,
     /// A user agent the window presents instead of the backend's default, when the provider
     /// needs one that matches the engine the backend drives.
     pub agent: Option<String>,
     /// Javascript to run in every page the window loads, before the page's own scripts. A window
-    /// with one is a scripted window and is never shown.
+    /// with one stays hidden unless `interactive` is set.
     pub script: Option<String>,
+    /// Shows a scripted page for user interaction instead of keeping it hidden.
+    /// Interactive pages retain the browser engine's own user agent by default.
+    pub interactive: bool,
+    /// Starts off-screen while a script decides whether user interaction is needed.
+    /// The caller can reveal the existing page with `Page::show` without reloading it.
+    pub hidden: bool,
 }
 
 impl Target {
-    /// Whether this target is a background page rather than a window the user works in.
+    /// Whether this target runs app code and must avoid the sign-in navigation retry.
     pub(crate) fn scripted(&self) -> bool {
         self.script.is_some()
+    }
+
+    /// Whether the user must be able to see and interact with this page.
+    pub(crate) fn visible(&self) -> bool {
+        !self.hidden && (self.interactive || !self.scripted())
     }
 }
 
@@ -103,6 +116,8 @@ pub struct Page {
     /// Whether the sign-in url has already been loaded a second time. Once is the limit: a page
     /// that comes up signed out again is left to the user.
     retried: bool,
+    cookies: String,
+    shown: bool,
 }
 
 /// The argument that starts this executable as a throwaway check for webkit2gtk on Linux.
@@ -127,23 +142,54 @@ impl Page {
     /// Opens the window and starts loading the target url. Must run on the main thread.
     pub fn open(target: Target) -> Result<Self> {
         let window = platform::Window::open(&target)?;
+        let shown = target.visible();
         Ok(Self {
             target,
             window,
             retried: false,
+            cookies: String::new(),
+            shown,
         })
     }
 
+    /// Reveals a hidden page for verification or a choice, retaining its current session.
+    pub fn show(&mut self) {
+        if !self.shown {
+            self.window.show();
+            self.shown = true;
+        }
+    }
+
+    /// Hides a page after user interaction finishes while its background script keeps running.
+    pub fn hide(&mut self) {
+        if self.shown {
+            self.window.hide();
+            self.shown = false;
+        }
+    }
+
+    /// Returns the last cookie read so a scripted capture can publish progress before completion.
+    /// Call `poll` first; the header is updated only when the asynchronous read has finished.
+    pub fn cookies(&self) -> &str {
+        &self.cookies
+    }
+
     /// Checks where the window is. Call it every few hundred milliseconds until it stops answering
-    /// `Pending`; the cookies come back once, and the window closes on that poll.
+    /// `Pending`; the cookies come back once, and the window closes on that poll. With an empty
+    /// proof list it stays open for reading and collects no cookies.
     pub fn poll(&mut self) -> Poll {
         if self.window.closed() {
             return Poll::Closed;
+        }
+        // Reading windows stay open until the user closes them; they collect no cookies.
+        if self.target.proof.is_empty() {
+            return Poll::Pending;
         }
         let Some(cookies) = self.window.fetch() else {
             return Poll::Pending;
         };
         let header = header(&cookies, &self.target.domain);
+        self.cookies.clone_from(&header);
         match proven(&header, &self.target.proof) {
             true => {
                 self.window.close();

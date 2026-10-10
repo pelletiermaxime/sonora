@@ -9,22 +9,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Build this fork's desktop release packages with the inherited GitHub Actions workflow,
+  including unsigned Flatpak bundles without upstream's signing key.
+- See your personal Last.fm album plays in artist discographies. Your album history loads once
+  in the background, stays cached for 24 hours, and is shared across artist pages.
+- Explore empath's top metal bands by genre in Discover and its similar bands on artist pages.
+  See the source snapshot date and reviewer statistics, then find bands in your music provider.
 - Browse metal releases by day in Discover, with genres and familiar bands ranked using your
   Last.fm listening history. Look for lesser-known full-length releases with Last.fm listener data.
-- Import a saved Metal Archives release JSON response to browse offline or reuse an existing
-  daily fetch without sending another Archives request.
 - View Metal Archives discographies and review averages on artist pages, then find and play
   albums through your active music provider. Archives lookups are cached and conservatively limited.
+- Load artist discographies through a temporary native browser when Metal Archives requires
+  browser verification, then browse the results directly in Sonora.
 
 ### Changed
 
 - Fullscreen lyrics grow with a large window, up to twice their size, so they no longer look
   small on a big screen. Small windows keep the size they had.
+- Artist headers show your Last.fm artist plays and Metal Archives genre together. Discography
+  rows no longer repeat the artist total and genre beneath every album.
+- Match covers and personal album plays across minor title differences and descriptive subtitles.
+  Exact names take priority, ambiguous matches stay unavailable, and full Archives titles stay visible.
+- Artist discographies appear before recent release dates finish loading, with dates updated in
+  the background. Archives requests are spaced two seconds apart, and the temporary browser
+  appears only when verification or a band selection needs your input.
+- The daily Metal Archives request limit is now 100. Reaching it shows how many hours remain
+  before another lookup is available.
+- Discover now loads new releases automatically, caches each week for 24 hours, and handles
+  browser verification when needed. Browse albums, all releases, familiar bands, or an automatic
+  New to you selection with simpler controls and no repeated releases in the timeline.
+- Browse artist discographies by main albums, singles and EPs, or other releases, with matching
+  streaming artwork and play controls on hover. Album titles and prominent review scores open
+  their Metal Archives pages in Sonora's native browser.
+- Use one Load or Refresh button for artist Archives data, with browser verification handled
+  automatically when needed.
+- Load artist Metal Archives data on demand and cache successful results for 24 hours. Refresh results
+  explicitly; failed refreshes keep previously loaded data visible.
+
 - On Windows, the minimize, maximize, restore and close buttons now use Windows' own icons, so
   they match other Windows apps.
 
 ### Fixed
 
+- New to you checks every eligible band in the release window and shows results as they arrive,
+  with a checked-band count. Recommendations now use the same criteria as the daily metal digest.
+- Cached Discover releases appear without waiting for Last.fm, and resolved albums reuse their
+  artwork. Artists with the same name keep their selected Archives identity across navigation.
+- Background browser lookups share the request limit and pacing for their entire session.
+  Empath's 24-hour cache expires from its original fetch time, including after navigating away.
+- Upcoming Metal Archives releases show their release date instead of a play control. Load or
+  refresh artist data to check recent year-only entries against their album pages.
+- Metal Archives refusals no longer impose an artificial 24-hour retry pause. Server-requested
+  waits and request limits show their actual retry time in your local timezone.
 - YouTube Music and Apple Music artist pages now list the artist's whole discography instead
   of stopping at ten albums and ten singles, and Deezer artist pages no longer stop at 50.
 - Apple Music artist pages now list the artist's live albums and compilations, which were

@@ -549,6 +549,8 @@ impl Session {
             title: t!("login-window-title", provider = provider.name()).to_string(),
             agent: sign_in.agent.map(str::to_owned),
             script: None,
+            interactive: false,
+            hidden: false,
         };
         match webview::Page::open(target) {
             Ok(login) => self.window = Some(login),

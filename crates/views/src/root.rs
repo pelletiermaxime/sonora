@@ -656,6 +656,10 @@ impl Root {
             Destination::Artist(id) => {
                 let (artist, detail) = self.artist(cx);
                 detail.update(cx, |artist, cx| artist.open(&id, cx));
+                Sonora::global(cx).metal.clone().update(cx, |state, cx| {
+                    state.load_history(cx);
+                    state.load_album_history(cx);
+                });
                 toolbar = Some(artist.read(cx).toolbar());
                 artist.into()
             }

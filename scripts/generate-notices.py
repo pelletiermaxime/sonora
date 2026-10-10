@@ -17,8 +17,9 @@ PREAMBLE = """# Third-party licenses
 Sonora is licensed under the GNU General Public License v3.0 or later; the full
 text is in `COPYING`. GPUI pulls in `zlog`, `ztracing` and `ztracing_macro` from
 the Zed repository, which carry the same license. The complete corresponding
-source is the tagged commit of <https://github.com/sonorahq/sonora> together
+source is the tagged commit of <https://github.com/pelletiermaxime/sonora> together
 with the dependency revisions pinned in `Cargo.lock`.
+This personal fork builds on <https://github.com/sonorahq/sonora>.
 
 The binary embeds:
 

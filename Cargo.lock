@@ -7569,7 +7569,9 @@ name = "sonora-metal"
 version = "0.42.2"
 dependencies = [
  "anyhow",
+ "base64",
  "deunicode",
+ "flate2",
  "jiff",
  "log",
  "reqwest 0.13.4",
@@ -7577,6 +7579,7 @@ dependencies = [
  "serde",
  "serde_json",
  "storage",
+ "strsim",
  "tokio",
 ]
 

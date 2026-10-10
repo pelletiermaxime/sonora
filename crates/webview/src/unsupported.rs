@@ -30,5 +30,9 @@ impl Window {
 
     pub(crate) fn load(&self, _url: &str) {}
 
+    pub(crate) fn show(&mut self) {}
+
+    pub(crate) fn hide(&mut self) {}
+
     pub(crate) fn close(&self) {}
 }

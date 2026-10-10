@@ -4,6 +4,7 @@ mod cover;
 mod detail;
 mod discord;
 mod drm;
+mod empath;
 mod genre;
 mod history;
 mod home;
@@ -38,6 +39,7 @@ pub use artist::{ArtistDetail, ArtistDetailEvent};
 pub use cover::Cover;
 pub use detail::{Collection, Detail, Header};
 pub use drm::{CdmState, Drm};
+pub use empath::Empath;
 pub use genre::{GenreDetails, Genres};
 pub use history::{History, HistoryState};
 pub use home::Home;
@@ -46,7 +48,9 @@ pub use library::{
 };
 pub use logging::log_file;
 pub use lyrics::{Lyrics, LyricsState};
-pub use metal::{MetalArtist, MetalDiscovery};
+pub use metal::{
+    MetalArtist, MetalDiscovery, MetalFetchError, release_cover as metal_release_cover,
+};
 pub use network::{Network, Reconnected};
 pub use pins::{PinSort, Pins};
 pub use playback::{Origin, Playback, PlaybackState, Repeat, Sleep, Whence};
@@ -172,6 +176,7 @@ pub struct Sonora {
     pub history: Entity<History>,
     pub lyrics: Entity<Lyrics>,
     pub metal: Entity<MetalDiscovery>,
+    pub empath: Entity<Empath>,
     pub network: Entity<Network>,
     pub pins: Entity<Pins>,
     pub playback: Entity<Playback>,
@@ -257,6 +262,7 @@ pub fn init(
     });
     let cover = cx.new(|cx| Cover::new(session.clone(), playback.clone(), io.clone(), cx));
     let metal = cx.new(|cx| MetalDiscovery::new(session.clone(), settings.clone(), io.clone(), cx));
+    let empath = cx.new(|cx| Empath::new(session.clone(), io.clone(), cx));
     let drm = cx.new(|cx| Drm::new(session.clone(), io.clone(), cx));
     let updates = cx.new(|cx| Updates::new(settings.clone(), io.clone(), cx));
     let usage = cx.new(|cx| Usage::new(session.clone(), database, io.clone(), cx));
@@ -280,6 +286,7 @@ pub fn init(
         history,
         lyrics,
         metal,
+        empath,
         network,
         pins,
         playback,

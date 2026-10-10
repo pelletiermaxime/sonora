@@ -1,4 +1,4 @@
-use crate::{ArtistStats, Band, History, Release, normalize};
+use crate::{ArtistStats, Band, BrowserError, History, Release, normalize};
 use anyhow::{Context as _, Result, bail};
 use scraper::{Html, Selector};
 use serde_json::Value;
@@ -89,6 +89,68 @@ pub(crate) fn upcoming(row: &Value) -> Result<Release> {
     })
 }
 
+/// Reads the identity from a rendered band page, never from unrelated search results.
+pub(crate) fn browser_band(value: &str) -> Result<Band> {
+    let html = Html::parse_document(value);
+    let Some(info) = html.select(&selector("#band_info")).next() else {
+        return Err(BrowserError::Incomplete.into());
+    };
+    let anchor = info
+        .select(&selector("h1.band_name a[href]"))
+        .next()
+        .ok_or(BrowserError::Incomplete)?;
+    let (id, name, url) = link(&anchor.html()).map_err(|_| BrowserError::Incomplete)?;
+    let mut country = String::new();
+    let mut genre = String::new();
+    for list in info.select(&selector("dl")) {
+        let mut key = String::new();
+        for field in list.select(&selector("dt, dd")) {
+            let value = text(&field.html());
+            match field.value().name() {
+                "dt" => key = value,
+                "dd" => match key.as_str() {
+                    "Country of origin:" => country = value,
+                    "Genre:" => genre = value,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    Ok(Band {
+        id,
+        name,
+        url,
+        genre,
+        country,
+    })
+}
+
+/// Reads the complete discography captured from the browser's loaded tab.
+pub(crate) fn browser_discography(value: &str, band: &Band) -> Result<Vec<Release>> {
+    let html = Html::parse_document(value);
+    let mut releases = Vec::new();
+    let mut found = false;
+    for table in html.select(&selector("table.discog")) {
+        if table.select(&selector("tbody tr")).next().is_none() {
+            continue;
+        }
+        found = true;
+        for release in discography(&table.html(), band)? {
+            if !releases
+                .iter()
+                .any(|known: &Release| known.id == release.id)
+            {
+                releases.push(release);
+            }
+        }
+    }
+    match found {
+        true => Ok(releases),
+        false => Err(BrowserError::Incomplete.into()),
+    }
+}
+
 pub(crate) fn discography(value: &str, band: &Band) -> Result<Vec<Release>> {
     let html = Html::parse_document(value);
     let row_selector = selector("tbody tr");
@@ -135,6 +197,44 @@ pub(crate) fn discography(value: &str, band: &Band) -> Result<Vec<Release>> {
         });
     }
     Ok(releases)
+}
+
+/// Reads the release date from the album's own information, excluding other editions and reviews.
+pub(crate) fn album_date(value: &str) -> Option<String> {
+    let html = Html::parse_document(value);
+    let info = html.select(&selector("#album_info")).next()?;
+    let mut release_date = false;
+    for field in info.select(&selector("dl dt, dl dd")) {
+        let value = text(&field.html());
+        match field.value().name() {
+            "dt" => release_date = value == "Release date:",
+            "dd" if release_date => return Some(date(&value)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Reads the browser's receipt so unused reserved album lookups can be returned.
+pub(crate) fn browser_date_requests(value: &str) -> Option<usize> {
+    let html = Html::parse_document(value);
+    html.select(&selector("meta[name='sonora-date-requests']"))
+        .next()?
+        .value()
+        .attr("content")?
+        .parse()
+        .ok()
+}
+
+/// Reads a server wait from an album response encountered during browser date checks.
+pub(crate) fn browser_date_retry(value: &str) -> Option<String> {
+    let html = Html::parse_document(value);
+    let value = html
+        .select(&selector("meta[name='sonora-date-retry-after']"))
+        .next()?
+        .value()
+        .attr("content")?;
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 /// Accepts ISO dates and the English dates used by Metal Archives, preserving imprecise years.
