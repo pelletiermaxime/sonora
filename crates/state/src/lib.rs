@@ -1,5 +1,6 @@
 mod artist;
 mod catalog;
+mod catalog_lookup;
 mod cover;
 mod detail;
 mod discord;
@@ -36,6 +37,7 @@ mod wake;
 mod window_shape;
 
 pub use artist::{ArtistDetail, ArtistDetailEvent};
+pub use catalog_lookup::{CatalogCandidate, CatalogLookup, CatalogOpened, CatalogQuery};
 pub use cover::Cover;
 pub use detail::{Collection, Detail, Header};
 pub use drm::{CdmState, Drm};

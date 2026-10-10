@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Browse your all-time top Last.fm artists and albums in Discover's Your listening tab.
-  Search your saved rankings and see personal play counts and when each chart was updated.
+  Search your saved rankings, see personal play counts, and open matching artist and album pages.
 - Build this fork's desktop release packages with the inherited GitHub Actions workflow,
   including unsigned Flatpak bundles without upstream's signing key.
 - See your personal Last.fm album plays in artist discographies. Import your album totals once,

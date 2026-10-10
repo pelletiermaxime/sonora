@@ -41,6 +41,7 @@ Compared with upstream, this fork adds:
   built-in browser. Matching provider covers and hover play controls keep playback in Sonora.
 - **Listening charts:** browse and search your all-time top Last.fm artists and albums in
   Discover's Your listening tab, with prominent play counts and the last update time.
+  Open artist and album pages through matching links in your active music provider.
   Opening the tab reads your shared cache without making additional requests.
 - **Personal listening stats:** show artist plays and genre in the artist header, plus personal
   album plays from a shared Last.fm library imported once. Daily refreshes fetch recent scrobbles

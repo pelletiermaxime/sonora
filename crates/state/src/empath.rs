@@ -216,36 +216,9 @@ impl Empath {
             return;
         };
         self.matching_loading = true;
-        let request = self.io.spawn(async move {
-            let (albums, tracks) =
-                tokio::join!(client.search_albums(&band.name), client.search(&band.name));
-            let mut refs = Vec::new();
-            let mut success = false;
-            match albums {
-                Ok(albums) => {
-                    success = true;
-                    refs.extend(albums.into_iter().flat_map(|album| album.artist_refs));
-                }
-                Err(error) => log::warn!("empath: cannot search provider albums: {error:#}"),
-            }
-            match tracks {
-                Ok(tracks) => {
-                    success = true;
-                    refs.extend(tracks.into_iter().flat_map(|track| track.artist_refs));
-                }
-                Err(error) => log::warn!("empath: cannot search provider tracks: {error:#}"),
-            }
-            let mut matches: Vec<ArtistRef> = Vec::new();
-            for artist in refs {
-                if artist.id.is_some()
-                    && normalize(&artist.name) == normalize(&band.name)
-                    && !matches.iter().any(|saved| saved.id == artist.id)
-                {
-                    matches.push(artist);
-                }
-            }
-            Ok((matches, !success))
-        });
+        let request = self
+            .io
+            .spawn(async move { provider_artists(client.as_ref(), &band.name).await });
         self.matching_request = Some(request.abort_handle());
         self.matching_task = Some(cx.spawn(async move |this, cx| {
             let result = join(request).await;
@@ -254,9 +227,8 @@ impl Empath {
                 this.matching_request = None;
                 this.matching_task = None;
                 match result {
-                    Ok((matches, failed)) => {
+                    Ok(matches) => {
                         this.matches = matches;
-                        this.matching_failed = failed;
                     }
                     Err(error) => {
                         log::warn!("empath: cannot find provider band: {error:#}");
@@ -351,6 +323,38 @@ impl Empath {
         self.matches.clear();
         self.matching = None;
     }
+}
+
+/// Both external charts use provider credits to find exact names without guessing artist IDs.
+pub(crate) async fn provider_artists(
+    client: &dyn music::MusicApi,
+    name: &str,
+) -> anyhow::Result<Vec<ArtistRef>> {
+    let (albums, tracks) = tokio::join!(client.search_albums(name), client.search(name));
+    let mut refs = Vec::new();
+    let mut success = false;
+    match albums {
+        Ok(albums) => {
+            success = true;
+            refs.extend(albums.into_iter().flat_map(|album| album.artist_refs));
+        }
+        Err(error) => log::warn!("catalog: cannot search provider albums: {error:#}"),
+    }
+    match tracks {
+        Ok(tracks) => {
+            success = true;
+            refs.extend(tracks.into_iter().flat_map(|track| track.artist_refs));
+        }
+        Err(error) => log::warn!("catalog: cannot search provider tracks: {error:#}"),
+    }
+    anyhow::ensure!(success, "cannot search provider artists");
+    let name = normalize(name);
+    let mut ids = std::collections::HashSet::new();
+    refs.retain(|artist| {
+        normalize(&artist.name) == name
+            && artist.id.as_ref().is_some_and(|id| ids.insert(id.clone()))
+    });
+    Ok(refs)
 }
 
 impl Drop for Empath {

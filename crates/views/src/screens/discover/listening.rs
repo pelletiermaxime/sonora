@@ -1,10 +1,14 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, Window, div};
+use gpui::{AnyElement, App, Context, FontWeight, Window, div};
 use i18n::t;
 use metal::normalize;
-use ui::{ActiveTheme as _, Button, Card, Deck, Notice, Scroller, TabBar, Text};
+use state::{CatalogCandidate, CatalogQuery};
+use ui::{
+    ActiveTheme as _, Button, Card, Deck, InlineLink, InlineLinks, Modal, Notice, Scroller, TabBar,
+    Text,
+};
 
 use super::{DiscoverView, Section};
 use crate::chrome::Chrome;
@@ -96,6 +100,14 @@ impl DiscoverView {
             return div().into_any_element();
         };
         let theme = *cx.theme();
+        let lookup = self.catalog_lookup.clone();
+        let query = match &row.album {
+            Some(title) => CatalogQuery::Album {
+                artist: row.artist.clone(),
+                title: title.clone(),
+            },
+            None => CatalogQuery::Artist(row.artist.clone()),
+        };
         Card::new(
             ("listening-row", index),
             row.album.as_ref().unwrap_or(&row.artist).clone(),
@@ -104,13 +116,27 @@ impl DiscoverView {
         .when(row.album.is_none(), Card::circle)
         .size(Text::Large)
         .weight(FontWeight::BOLD)
+        .underline()
+        .title_press(move |_, _, cx| lookup.update(cx, |state, cx| state.open(query.clone(), cx)))
         .eyebrow(t!("empath-rank", rank = row.rank))
         .when_some(row.album.as_ref(), |card, _| {
+            let lookup = self.catalog_lookup.clone();
             card.bare_meta(
-                div()
-                    .text_color(theme.muted_foreground)
-                    .text_size(theme.text(Text::Small))
-                    .child(row.artist.clone()),
+                InlineLinks::new(
+                    format!("listening-artist-{index}"),
+                    [InlineLink::new(
+                        row.artist.clone(),
+                        Some(row.artist.clone().into()),
+                    )],
+                    row.artist.clone(),
+                    theme.muted_foreground,
+                )
+                .text_size(theme.text(Text::Small))
+                .on_click(move |artist, cx| {
+                    lookup.update(cx, |state, cx| {
+                        state.open(CatalogQuery::Artist(artist.to_string()), cx)
+                    })
+                }),
             )
         })
         .trailing(
@@ -135,6 +161,92 @@ impl DiscoverView {
         )
         .h_full()
         .into_any_element()
+    }
+
+    /// The same picker handles namesakes, album editions, missing results, and search failures.
+    pub(super) fn listening_lookup_modal(&self, cx: &App) -> Option<AnyElement> {
+        let state = self.catalog_lookup.read(cx);
+        let query = state.query.as_ref()?;
+        let name = match query {
+            CatalogQuery::Artist(name) => name,
+            CatalogQuery::Album { title, .. } => title,
+        };
+        let theme = *cx.theme();
+        let mut body = div()
+            .id("listening-matches")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .max_h(theme.metrics.row * 8.)
+            .overflow_y_scroll();
+        if state.loading {
+            body = body.child(t!("metal-matching"));
+        } else if let Some(error) = state.error {
+            body = body.child(i18n::lookup(error, None));
+        } else if state.candidates.is_empty() {
+            body = body.child(t!("listening-no-match"));
+        } else {
+            for (index, candidate) in state.candidates.iter().enumerate() {
+                let (name, detail, label) = match candidate {
+                    CatalogCandidate::Artist(artist) => (
+                        artist.name.clone(),
+                        artist.id.clone().unwrap_or_default(),
+                        "listening-open-artist",
+                    ),
+                    CatalogCandidate::Album(album) => (
+                        album.name.clone(),
+                        format!("{} / {}", album.artists, album.release_date),
+                        "metal-open-album",
+                    ),
+                };
+                let lookup = self.catalog_lookup.clone();
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .py_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().truncate().font_weight(FontWeight::BOLD).child(name))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(theme.text(Text::Small))
+                                        .text_color(theme.muted_foreground)
+                                        .child(detail),
+                                ),
+                        )
+                        .child(
+                            Button::new(("listening-match-open", index))
+                                .small()
+                                .label(i18n::lookup(label, None))
+                                .on_click(move |_, _, cx| {
+                                    lookup.update(cx, |state, cx| state.choose(index, cx))
+                                }),
+                        ),
+                );
+            }
+        }
+        let closed = self.catalog_lookup.clone();
+        let dismissed = self.catalog_lookup.clone();
+        Some(
+            Modal::new(
+                "listening-picker",
+                t!("listening-lookup-title", name = name.clone()),
+            )
+            .detail(t!("listening-lookup-help"))
+            .child(body)
+            .action(
+                Button::new("listening-match-close")
+                    .label(t!("common-dismiss"))
+                    .on_click(move |_, _, cx| closed.update(cx, |state, cx| state.dismiss(cx))),
+            )
+            .on_dismiss(move |_, _, cx| dismissed.update(cx, |state, cx| state.dismiss(cx)))
+            .into_any_element(),
+        )
     }
 
     pub(super) fn listening_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

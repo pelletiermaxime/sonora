@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, FontWeight, Render, ScrollHandle, Window, div};
 use i18n::t;
 use metal::normalize;
-use state::{Empath, MetalDiscovery, Sonora};
+use state::{CatalogLookup, CatalogOpened, Empath, MetalDiscovery, Sonora};
 use ui::{
     ActiveTheme as _, Button, Deck, Input, MenuItem, Notice, Picker, Popovers, Scrollbar, Scroller,
     TabBar, Text,
@@ -48,6 +48,7 @@ enum Row {
 pub(crate) struct DiscoverView {
     discovery: Entity<MetalDiscovery>,
     empath: Entity<Empath>,
+    catalog_lookup: Entity<CatalogLookup>,
     section: Section,
     listening_kind: ListeningKind,
     listening_rows: Rc<Vec<ListeningRow>>,
@@ -76,6 +77,17 @@ impl DiscoverView {
         })
         .detach();
         let empath = Sonora::global(cx).empath.clone();
+        let session = Sonora::global(cx).session.clone();
+        let catalog_lookup = cx.new(|cx| CatalogLookup::new(session, cx));
+        cx.observe(&catalog_lookup, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&catalog_lookup, |_, _, event, cx| {
+            let destination = match event {
+                CatalogOpened::Artist(id) => router::Destination::Artist(id.clone().into()),
+                CatalogOpened::Album(id) => router::Destination::Album(id.clone().into()),
+            };
+            router::navigate(destination, cx);
+        })
+        .detach();
         cx.observe(&empath, |this, _, cx| {
             this.rebuild_genres(cx);
             cx.notify();
@@ -93,6 +105,7 @@ impl DiscoverView {
         Self {
             discovery,
             empath,
+            catalog_lookup,
             section: Section::Releases,
             listening_kind: ListeningKind::Artists,
             listening_rows: Rc::new(Vec::new()),
@@ -159,6 +172,8 @@ impl DiscoverView {
                         .label(i18n::lookup(key, None))
                         .selected(self.section == section)
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            this.catalog_lookup
+                                .update(cx, |state, cx| state.dismiss(cx));
                             this.section = section;
                             this.popovers.close();
                             this.rewind(cx);
@@ -419,7 +434,8 @@ impl Render for DiscoverView {
             return div()
                 .relative()
                 .size_full()
-                .child(self.listening_page(window, cx));
+                .child(self.listening_page(window, cx))
+                .children(self.listening_lookup_modal(cx));
         }
         if self.section == Section::Genres {
             let page = self.genres_page(window, cx);
