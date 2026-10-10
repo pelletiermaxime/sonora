@@ -17,6 +17,17 @@ use crate::chrome::metal::{
     release_row,
 };
 
+mod listening;
+use listening::{ListeningKind, ListeningRow};
+
+/// Each Discover section loads only its own data; listening charts read existing caches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Releases,
+    Genres,
+    Listening,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// Filters are local and never trigger another Archives request.
 enum Filter {
@@ -37,7 +48,9 @@ enum Row {
 pub(crate) struct DiscoverView {
     discovery: Entity<MetalDiscovery>,
     empath: Entity<Empath>,
-    genres: bool,
+    section: Section,
+    listening_kind: ListeningKind,
+    listening_rows: Rc<Vec<ListeningRow>>,
     style: usize,
     genre_rows: Rc<Vec<usize>>,
     popovers: Popovers,
@@ -58,6 +71,7 @@ impl DiscoverView {
         });
         cx.observe(&discovery, |this, _, cx| {
             this.rebuild(cx);
+            this.rebuild_listening(cx);
             cx.notify();
         })
         .detach();
@@ -70,6 +84,7 @@ impl DiscoverView {
         cx.observe(&input, |this, _, cx| {
             this.rebuild(cx);
             this.rebuild_genres(cx);
+            this.rebuild_listening(cx);
             this.rewind(cx);
             cx.notify();
         })
@@ -78,7 +93,9 @@ impl DiscoverView {
         Self {
             discovery,
             empath,
-            genres: false,
+            section: Section::Releases,
+            listening_kind: ListeningKind::Artists,
+            listening_rows: Rc::new(Vec::new()),
             style: 0,
             genre_rows: Rc::new(Vec::new()),
             popovers: Popovers::default(),
@@ -90,13 +107,18 @@ impl DiscoverView {
     }
 
     pub(crate) fn load(&mut self, cx: &mut Context<Self>) {
-        self.empath
-            .update(cx, |state, cx| state.load_genres(false, cx));
-        if !self.genres {
-            self.discovery.update(cx, |state, cx| state.load(cx));
+        match self.section {
+            Section::Releases => self.discovery.update(cx, |state, cx| state.load(cx)),
+            Section::Genres => self
+                .empath
+                .update(cx, |state, cx| state.load_genres(false, cx)),
+            Section::Listening => self
+                .discovery
+                .update(cx, |state, cx| state.restore_listening(cx)),
         }
         self.rebuild(cx);
         self.rebuild_genres(cx);
+        self.rebuild_listening(cx);
     }
 
     /// Genres are filtered locally, without fetching one page per style or band.
@@ -125,21 +147,25 @@ impl DiscoverView {
     fn page_tabs(&self, cx: &Context<Self>) -> AnyElement {
         TabBar::new("discover-sections")
             .items(
-                [(false, "empath-new-releases"), (true, "empath-top-genres")]
-                    .into_iter()
-                    .map(|(genres, key)| {
-                        Button::new(key)
-                            .small()
-                            .label(i18n::lookup(key, None))
-                            .selected(self.genres == genres)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.genres = genres;
-                                this.popovers.close();
-                                this.rewind(cx);
-                                this.load(cx);
-                                cx.notify();
-                            }))
-                    }),
+                [
+                    (Section::Releases, "empath-new-releases"),
+                    (Section::Genres, "empath-top-genres"),
+                    (Section::Listening, "listening-tab"),
+                ]
+                .into_iter()
+                .map(|(section, key)| {
+                    Button::new(key)
+                        .small()
+                        .label(i18n::lookup(key, None))
+                        .selected(self.section == section)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.section = section;
+                            this.popovers.close();
+                            this.rewind(cx);
+                            this.load(cx);
+                            cx.notify();
+                        }))
+                }),
             )
             .into_any_element()
     }
@@ -389,7 +415,13 @@ impl DiscoverView {
 
 impl Render for DiscoverView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.genres {
+        if self.section == Section::Listening {
+            return div()
+                .relative()
+                .size_full()
+                .child(self.listening_page(window, cx));
+        }
+        if self.section == Section::Genres {
             let page = self.genres_page(window, cx);
             return div()
                 .relative()

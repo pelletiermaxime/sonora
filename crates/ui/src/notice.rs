@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{
-    App, Div, FontWeight, Interactivity, Pixels, SharedString, StyleRefinement, Window, div, px,
-    svg,
+    AnyElement, App, Div, FontWeight, Interactivity, Pixels, SharedString, StyleRefinement, Window,
+    div, px, svg,
 };
 
 use crate::metrics::Text;
@@ -18,6 +18,7 @@ pub struct Notice {
     icon: SharedString,
     failed: bool,
     centered: bool,
+    action: Option<AnyElement>,
 }
 
 impl Notice {
@@ -29,6 +30,7 @@ impl Notice {
             icon: SharedString::from("icons/circle-alert.svg"),
             failed: false,
             centered: false,
+            action: None,
         }
     }
 
@@ -44,6 +46,12 @@ impl Notice {
 
     pub fn icon(mut self, path: impl Into<SharedString>) -> Self {
         self.icon = path.into();
+        self
+    }
+
+    /// Adds a caller-supplied action beneath the notice's message.
+    pub fn action(mut self, action: impl IntoElement) -> Self {
+        self.action = Some(action.into_any_element());
         self
     }
 }
@@ -69,6 +77,7 @@ impl RenderOnce for Notice {
             icon,
             failed,
             centered,
+            action,
         } = self;
 
         let theme = *cx.theme();
@@ -111,7 +120,8 @@ impl RenderOnce for Notice {
             .text_size(theme.text(Text::Small))
             .when(centered, |this| this.items_center().text_center())
             .child(head)
-            .child(div().text_color(theme.muted_foreground).child(message));
+            .child(div().text_color(theme.muted_foreground).child(message))
+            .children(action);
 
         notice.style().refine(&overrides);
         notice

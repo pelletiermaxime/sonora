@@ -845,6 +845,11 @@ impl Client {
         })
     }
 
+    /// Reads saved artist totals without making a Last.fm request.
+    pub fn cached_history(&self, user: &str) -> Result<Option<Cached<History>>> {
+        self.preview(&format!("metal:lastfm:history:{}", user.to_lowercase()))
+    }
+
     /// Refreshes the user's complete library, optionally falling back to an explicit local seed.
     pub async fn history(
         &self,

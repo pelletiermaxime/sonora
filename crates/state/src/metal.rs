@@ -83,7 +83,7 @@ pub struct MetalDiscovery {
     request: Option<AbortHandle>,
     history_task: Option<Task<()>>,
     history_request: Option<AbortHandle>,
-    history_loading: bool,
+    pub history_loading: bool,
     enrichment: Option<Task<()>>,
     enrichment_request: Option<AbortHandle>,
     resolve: Option<Task<()>>,
@@ -99,6 +99,10 @@ pub struct MetalDiscovery {
     pub album_plays_loading: bool,
     pub album_plays_failed: bool,
     pub album_plays_retry_at: Option<u64>,
+    pub listening_loading: bool,
+    pub listening_failed: bool,
+    listening_task: Option<Task<()>>,
+    listening_request: Option<AbortHandle>,
     album_library: Option<AlbumLibrary>,
     album_account: Option<(String, String)>,
     album_task: Option<Task<()>>,
@@ -207,6 +211,10 @@ impl MetalDiscovery {
             album_plays_loading: false,
             album_plays_failed: false,
             album_plays_retry_at: None,
+            listening_loading: false,
+            listening_failed: false,
+            listening_task: None,
+            listening_request: None,
             album_library: None,
             album_account,
             album_task: None,
@@ -217,6 +225,64 @@ impl MetalDiscovery {
 
     pub fn client(&self) -> Client {
         self.client.clone()
+    }
+
+    /// Exposes the shared account library without requesting or copying its album history.
+    pub fn album_library(&self) -> Option<&AlbumLibrary> {
+        self.album_library.as_ref()
+    }
+
+    /// Restores personal charts from disk only; switching tabs never initiates a Last.fm sync.
+    pub fn restore_listening(&mut self, cx: &mut Context<Self>) {
+        if self.listening_loading {
+            return;
+        }
+        let Some((user, _)) = lastfm_album_account(self.settings.read(cx)) else {
+            return;
+        };
+        self.listening_loading = true;
+        self.listening_failed = false;
+        self.user = self.settings.read(cx).scrobbling()["lastfm"].name.clone();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            Ok((
+                client.cached_history(&user)?,
+                client.cached_album_library(&user)?,
+            ))
+        });
+        self.listening_request = Some(request.abort_handle());
+        self.listening_task = Some(cx.spawn(async move |this, cx| {
+            let result = join(request).await;
+            this.update(cx, |this, cx| {
+                this.listening_loading = false;
+                this.listening_task = None;
+                this.listening_request = None;
+                match result {
+                    Ok((history, albums)) => {
+                        if let Some(history) = history
+                            && history.data.updated_at >= this.history.updated_at
+                        {
+                            this.history = history.data;
+                        }
+                        if let Some(albums) = albums
+                            && this
+                                .album_library
+                                .as_ref()
+                                .is_none_or(|kept| albums.data.fetched_at >= kept.fetched_at)
+                        {
+                            this.album_library = Some(albums.data);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("metal: cannot restore saved listening charts: {error:#}");
+                        this.listening_failed = true;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Returns a locally matched count from the last complete personal album chart.
@@ -303,6 +369,12 @@ impl MetalDiscovery {
 
     /// Cancels account-owned work and removes personal memory on sign-out or account changes.
     fn clear_album_history(&mut self) {
+        if let Some(request) = self.listening_request.take() {
+            request.abort();
+        }
+        self.listening_task = None;
+        self.listening_loading = false;
+        self.listening_failed = false;
         if let Some(request) = self.album_request.take() {
             request.abort();
         }

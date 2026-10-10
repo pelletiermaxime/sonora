@@ -81,6 +81,36 @@ empath-find-failed = Could not search your music provider. Close this window and
 empath-no-provider-band = No matching artist was found in your active music provider.
 empath-provider-match = { $artist } · { $id }
 metal-discover-description = Browse new metal releases by week, with bands you know highlighted by your listening history.
+listening-tab = Your listening
+listening-description = Your top artists and albums, ranked by all-time plays from your saved Last.fm history.
+listening-top-artists = Top artists
+listening-top-albums = Top albums
+listening-account = Last.fm: { $user }
+listening-updated = Last updated: { $date }
+listening-artist-count = { $count ->
+    [one] 1 artist
+   *[other] { $count } artists
+    }
+listening-album-count = { $count ->
+    [one] 1 album
+   *[other] { $count } albums
+    }
+listening-plays = { $count ->
+    [one] personal play
+   *[other] personal plays
+    }
+listening-loading = Loading your listening history
+listening-cache-help = This tab reads your shared Last.fm cache. Browsing and filtering do not request new data.
+listening-cache-failed = Could not read your saved listening history
+listening-fetch-failed = Could not update your Last.fm history
+listening-fetch-failed-help = Saved rankings remain available. If this history has not been loaded yet, try loading it again shortly.
+listening-connect = Connect Last.fm to see your listening history
+listening-connect-help = Add your Last.fm account in Settings. Sonora will reuse the history fetched for Discover and artist pages.
+listening-empty = No artists or albums to show
+listening-missing-help = This history has not been saved yet. Load it once to use the shared cache.
+listening-empty-help = Clear your search to see more results. Album totals that are unavailable are left out of the ranking.
+listening-load-artists = Load artist history
+listening-load-albums = Load album history
 metal-discover-cache-policy = Releases load automatically and stay cached for 24 hours. Refresh results to check for updates.
 metal-discover-browser-title = Metal Archives — load new releases
 metal-discover-browser-progress = Loading your release list. This window will close automatically when it is ready.
