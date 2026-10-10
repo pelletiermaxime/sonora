@@ -21,6 +21,7 @@ number-group = { "," }
 # navigation
 nav-history = History
 nav-home = Home
+nav-discover = Discover
 nav-search = Search
 nav-library = Your Library
 nav-settings = Settings
@@ -37,6 +38,58 @@ nav-pinned = Pinned
 nav-unpin = Unpin
 nav-pin-hint = Drop here to pin
 library-liked-songs = Favorites
+
+# metal discovery
+metal-discover-description = New metal releases, your listening history, and discoveries from Encyclopaedia Metallum.
+metal-filter-hint = Filter by band, album, genre, or release type
+metal-familiar = From bands you know
+metal-worth-checking = Worth checking out
+metal-all = All releases
+metal-full-lengths = Full-length albums
+metal-known = Familiar bands
+metal-this-week = This week
+metal-summary = { $count ->
+    [one] 1 release
+   *[other] { $count } releases
+    } / { $artists ->
+    [one] 1 artist in your Last.fm history
+   *[other] { $artists } artists in your Last.fm history
+    }
+metal-history-source = Listening history: { $source }
+metal-enrich = Last.fm discoveries (12 bands)
+metal-enriching = Checking Last.fm listeners...
+metal-request-policy = Archives data is cached: at least four seconds between requests, at most 30 a day. Browser source links are outside this budget. Recommendations use full-length albums, at most 5 personal plays, at least 25,000 Last.fm listeners, and metal-related tags. Last.fm data is name-based and may include namesakes.
+metal-loading = Loading cached or remote metal data...
+metal-retry = Retry with cache
+metal-no-releases = No releases match this date range and filter.
+metal-source = Archives
+metal-artist-plays = { $artist } / { $count ->
+    [one] 1 personal play
+   *[other] { $count } personal plays
+    }
+metal-listeners = { $count ->
+    [one] 1 Last.fm listener
+   *[other] { $count } Last.fm listeners
+    }
+metal-review-score = { $score }% / { $count ->
+    [one] 1 review
+   *[other] { $count } reviews
+    }
+metal-discography = Metal Archives discography
+metal-no-discography = No discography was returned for this band.
+metal-no-band = No matching band was found on Metal Archives.
+metal-select-band = Several bands share this name. Choose the correct genre and country before loading a discography.
+metal-change-band = Check band identity
+metal-match-title = Find { $album }
+metal-match-help = Results from your active music provider. Check the album title and artist ({ $artist }) before playing; editions and namesakes may differ.
+metal-matching = Searching your music provider...
+metal-no-album = No matching album was found on your active music provider.
+metal-open-album = Open
+metal-sign-in = Sign in to a streaming provider to find and play this release.
+metal-import = Import JSON
+metal-import-help = Reuse a saved Archives release response for the selected date range without sending new requests. Partial exports are clearly marked.
+metal-imported = Browsing saved Archives data without new requests.
+metal-partial = Saved data contains { $count } of { $total } releases. Missing releases and days are not assumed empty.
 library-play-liked-songs = Play
 library-no-songs = No favorites yet
 library-no-albums = No saved albums yet

@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Browse metal releases by day in Discover, with genres and familiar bands ranked using your
+  Last.fm listening history. Look for lesser-known full-length releases with Last.fm listener data.
+- Import a saved Metal Archives release JSON response to browse offline or reuse an existing
+  daily fetch without sending another Archives request.
+- View Metal Archives discographies and review averages on artist pages, then find and play
+  albums through your active music provider. Archives lookups are cached and conservatively limited.
+
 ### Changed
 
 - Fullscreen lyrics grow with a large window, up to twice their size, so they no longer look

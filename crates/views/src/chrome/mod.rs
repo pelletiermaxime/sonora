@@ -1,4 +1,5 @@
 mod aside;
+pub(crate) mod metal;
 mod player_bar;
 mod sidebar_left;
 mod sidebar_right;

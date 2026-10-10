@@ -19,6 +19,7 @@ pub enum LibraryTab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavEntry {
     Home,
+    Discover,
     Search,
     Library,
     History,
@@ -27,8 +28,9 @@ pub enum NavEntry {
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Home,
+        Self::Discover,
         Self::Search,
         Self::Library,
         Self::History,
@@ -39,6 +41,7 @@ impl NavEntry {
     pub fn id(self) -> &'static str {
         match self {
             Self::Home => "home",
+            Self::Discover => "discover",
             Self::Search => "search",
             Self::Library => "library",
             Self::History => "history",
@@ -50,6 +53,7 @@ impl NavEntry {
     pub fn key(self) -> &'static str {
         match self {
             Self::Home => "nav-home",
+            Self::Discover => "nav-discover",
             Self::Search => "nav-search",
             Self::Library => "nav-library",
             Self::History => "nav-history",
@@ -62,6 +66,7 @@ impl NavEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Home,
+    Discover,
     Search,
     History,
     Songs,
@@ -72,8 +77,9 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Home,
+        Self::Discover,
         Self::Search,
         Self::Songs,
         Self::Albums,
@@ -86,6 +92,7 @@ impl Screen {
     pub fn id(self) -> &'static str {
         match self {
             Self::Home => "home",
+            Self::Discover => "discover",
             Self::Search => "search",
             Self::History => "history",
             Self::Songs => "songs",
@@ -99,6 +106,7 @@ impl Screen {
     pub fn key(self) -> &'static str {
         match self {
             Self::Home => "nav-home",
+            Self::Discover => "nav-discover",
             Self::Search => "nav-search",
             Self::History => "nav-history",
             Self::Songs => "nav-songs",
@@ -117,6 +125,7 @@ impl Screen {
     pub fn needs_account(self) -> bool {
         match self {
             Self::Home => false,
+            Self::Discover => false,
             Self::Search => false,
             Self::History => false,
             Self::Songs => true,
@@ -130,6 +139,7 @@ impl Screen {
     pub fn destination(self) -> Destination {
         match self {
             Self::Home => Destination::Home,
+            Self::Discover => Destination::Discover,
             Self::Search => Destination::Search,
             Self::History => Destination::History,
             Self::Songs => Destination::Library(LibraryTab::Songs),
@@ -201,6 +211,7 @@ impl SettingsTab {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Destination {
     Home,
+    Discover,
     History,
     Library(LibraryTab),
     Local(LibraryTab),

@@ -11,7 +11,7 @@ use crate::chrome::Chrome;
 use crate::shared::cells;
 use i18n::t;
 use music::{SavedArtist, Track};
-use state::{AppSettings, ArtistDetail, Origin, Playback, Sonora};
+use state::{AppSettings, ArtistDetail, Io, MetalArtist, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
@@ -56,6 +56,7 @@ impl Tracks for ArtistTracks {
 
 pub(crate) struct ArtistView {
     detail: Entity<ArtistDetail>,
+    metal: Entity<MetalArtist>,
     playback: Entity<Playback>,
     playback_status: PlaybackStatus,
     artist_id: Option<String>,
@@ -102,6 +103,11 @@ impl ArtistView {
         let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id));
         let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
         let settings = Sonora::global(cx).settings.clone();
+        let client = Sonora::global(cx).metal.read(cx).client();
+        let metal = cx.new(|cx| MetalArtist::new(client, Io::global(cx), cx));
+        cx.observe(&metal, |_, _, cx| cx.notify()).detach();
+        let discovery = Sonora::global(cx).metal.clone();
+        cx.observe(&discovery, |_, _, cx| cx.notify()).detach();
         let saved = settings.read(cx).table(SECTION);
         let sorting = settings.read(cx).sorting(SECTION);
         let mode = settings.read(cx).view_or(SECTION, Mode::List);
@@ -153,6 +159,12 @@ impl ArtistView {
         .detach();
 
         cx.observe(&detail, |this, detail, cx| {
+            let name = detail
+                .read(cx)
+                .artist()
+                .map(|artist| artist.name.clone())
+                .unwrap_or_default();
+            this.metal.update(cx, |metal, cx| metal.open(&name, cx));
             let artist_id = detail.read(cx).id().map(str::to_owned);
             if this.artist_id != artist_id {
                 this.artist_id = artist_id;
@@ -215,6 +227,7 @@ impl ArtistView {
         Self {
             popular: Rc::new(detail.read(cx).tracks().to_vec()),
             detail,
+            metal,
             playback,
             playback_status: current_playback,
             artist_id,
@@ -890,6 +903,92 @@ impl ArtistView {
         Some(div().pt_6().child(card).into_any_element())
     }
 
+    fn metal_discography(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::chrome::metal::{notice, release_row};
+        let state = self.metal.read(cx);
+        let theme = *cx.theme();
+        let discovery = Sonora::global(cx).metal.clone();
+        let mut section = div().pt_6().flex().flex_col().gap_2().child(
+            div()
+                .text_size(theme.text(Text::Title))
+                .font_weight(FontWeight::BOLD)
+                .child(t!("metal-discography")),
+        );
+        if state.loading {
+            return section
+                .child(notice(t!("metal-loading"), cx))
+                .into_any_element();
+        }
+        if let Some(error) = &state.error {
+            let retried = self.metal.clone();
+            return section
+                .child(notice(error.clone(), cx))
+                .child(
+                    Button::new("metal-artist-retry")
+                        .small()
+                        .label(t!("metal-retry"))
+                        .on_click(move |_, _, cx| retried.update(cx, |state, cx| state.retry(cx))),
+                )
+                .into_any_element();
+        }
+        if let Some(band) = &state.band {
+            let url = band.url.clone();
+            let changed = self.metal.clone();
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(format!("{} / {} / {}", band.name, band.genre, band.country))
+                    .child(
+                        Button::new("metal-band-source")
+                            .small()
+                            .outline()
+                            .label(t!("metal-source"))
+                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                    )
+                    .child(
+                        Button::new("metal-change-band")
+                            .small()
+                            .ghost()
+                            .label(t!("metal-change-band"))
+                            .on_click(move |_, _, cx| {
+                                changed.update(cx, |state, cx| state.retry(cx))
+                            }),
+                    ),
+            );
+            for (index, release) in state.releases.iter().enumerate() {
+                section = section.child(release_row(
+                    ("metal-discography-release", index),
+                    release,
+                    &discovery,
+                    cx,
+                ));
+            }
+            if state.releases.is_empty() {
+                section = section.child(notice(t!("metal-no-discography"), cx));
+            }
+        } else if !state.candidates.is_empty() {
+            section = section.child(notice(t!("metal-select-band"), cx));
+            for (index, band) in state.candidates.iter().enumerate() {
+                let band = band.clone();
+                let selected = self.metal.clone();
+                section = section.child(
+                    Button::new(("metal-band-candidate", index))
+                        .outline()
+                        .label(format!("{} / {} / {}", band.name, band.genre, band.country))
+                        .on_click(move |_, _, cx| {
+                            selected.update(cx, |state, cx| state.choose(band.clone(), cx))
+                        }),
+                );
+            }
+        } else {
+            section = section.child(notice(t!("metal-no-band"), cx));
+        }
+        section.into_any_element()
+    }
+
     fn about_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.about_open {
             return None;
@@ -1042,6 +1141,7 @@ impl Render for ArtistView {
                 )
             }))
             .child(tracks)
+            .child(self.metal_discography(cx))
             .children(grid)
             .children(rails)
             .children(about)
@@ -1055,6 +1155,10 @@ impl Render for ArtistView {
             .child(page)
             .when_some(track_menu, |this, menu| this.child(menu))
             .children(self.about_dialog(cx))
+            .children(crate::chrome::metal::album_modal(
+                &Sonora::global(cx).metal,
+                cx,
+            ))
     }
 }
 

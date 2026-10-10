@@ -10,6 +10,7 @@ i18n.workspace = true
 icons.workspace = true
 jiff.workspace = true
 music.workspace = true
+metal.workspace = true
 input.workspace = true
 router.workspace = true
 ui.workspace = true
