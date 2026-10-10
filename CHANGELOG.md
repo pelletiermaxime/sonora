@@ -9,79 +9,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Browse your all-time top Last.fm artists and albums in Discover's Your listening tab.
-  Search your saved rankings, see personal play counts, and open matching artist and album pages.
-- Build this fork's desktop release packages with the inherited GitHub Actions workflow,
-  including unsigned Flatpak bundles without upstream's signing key.
-- See your personal Last.fm album plays in artist discographies. Import your album totals once,
-  then refresh recently played albums daily in the background, with catch-up after time away.
-- Explore empath's top metal bands by genre in Discover and its similar bands on artist pages.
-  See the source snapshot date and reviewer statistics, then find bands in your music provider.
-- Browse metal releases by day in Discover, with genres and familiar bands ranked using your
-  Last.fm listening history. Look for lesser-known full-length releases with Last.fm listener data.
-- View Metal Archives discographies and review averages on artist pages, then find and play
-  albums through your active music provider. Archives lookups are cached and conservatively limited.
-- Load artist discographies through a temporary native browser when Metal Archives requires
-  browser verification, then browse the results directly in Sonora.
-
-### Changed
-
-- Open Metal Archives album, band, and review pages in a resizable browser using 80% of the
-  available screen width and height.
-- Fullscreen lyrics grow with a large window, up to twice their size, so they no longer look
-  small on a big screen. Small windows keep the size they had.
-- Artist headers show your Last.fm artist plays and Metal Archives genre together. Discography
-  rows no longer repeat the artist total and genre beneath every album.
-- Match covers and personal album plays across minor title differences and descriptive subtitles.
-  Exact names take priority, ambiguous matches stay unavailable, and full Archives titles stay visible.
-- Artist discographies appear before recent release dates finish loading, with dates updated in
-  the background. Archives requests are spaced two seconds apart, and the temporary browser
-  appears only when verification or a band selection needs your input.
-- The daily Metal Archives request limit is now 100. Reaching it shows how many hours remain
-  before another lookup is available.
-- Discover now loads new releases automatically, caches each week for 24 hours, and handles
-  browser verification when needed. Browse albums, all releases, familiar bands, or an automatic
-  New to you selection with simpler controls and no repeated releases in the timeline.
-- Browse artist discographies by main albums, singles and EPs, or other releases, with matching
-  streaming artwork and play controls on hover. Album titles and prominent review scores open
-  their Metal Archives pages in Sonora's native browser.
-- Use one Load or Refresh button for artist Archives data, with browser verification handled
-  automatically when needed.
-- Load artist Metal Archives data on demand and cache successful results for 24 hours. Refresh results
-  explicitly; failed refreshes keep previously loaded data visible.
-
-- On Windows, the minimize, maximize, restore and close buttons now use Windows' own icons, so
-  they match other Windows apps.
-
-### Fixed
-
-- New to you checks every eligible band in the release window and shows results as they arrive,
-  with a checked-band count. Recommendations now use the same criteria as the daily metal digest.
-- Cached Discover releases appear without waiting for Last.fm, and resolved albums reuse their
-  artwork. Artists with the same name keep their selected Archives identity across navigation.
-- Background browser lookups share the request limit and pacing for their entire session.
-  Empath's 24-hour cache expires from its original fetch time, including after navigating away.
-- Upcoming Metal Archives releases show their release date instead of a play control. Load or
-  refresh artist data to check recent year-only entries against their album pages.
-- Metal Archives refusals no longer impose an artificial 24-hour retry pause. Server-requested
-  waits and request limits show their actual retry time in your local timezone.
-- YouTube Music and Apple Music artist pages now list the artist's whole discography instead
-  of stopping at ten albums and ten singles, and Deezer artist pages no longer stop at 50.
-- Apple Music artist pages now list the artist's live albums and compilations, which were
-  missing even though they opened fine from search.
-- Albums on YouTube Music and Deezer artist pages now name the artist, and a card with no
-  artist to show no longer ends its line in a stray dot.
-- Artist names on Apple Music album cards now open the artist, in search, charts, home, the
-  library and on artist pages.
-- Top songs on Apple Music charts now show and play as songs instead of album cards.
-- The Appears on row of an artist page no longer sits flush against the Show all button.
-- Seeking in the last few seconds of a song now moves within that song, instead of jumping into
-  the next one or doing nothing.
-- The fullscreen controls blur away as they hide, instead of leaving the top of the seek bar cut
-  off for the last moment.
-- Signing in to Spotify on Windows on ARM no longer fails with "Spotify turned down the
-  sign-in".
-- Spotify and Deezer accounts now show profile picture in Settings instead of initials.
+- Discover metal releases by week, with filters for full-length albums, familiar bands, and
+  bands that are new to you based on your Last.fm listening history.
+- Explore empath's top metal bands by genre and similar bands on artist pages, then find them
+  in your active music provider.
+- Browse Metal Archives discographies by albums, singles and EPs, or other releases, with
+  cover art, review scores, upcoming release dates, and playback through your music provider.
+  Open band, album, and review pages in Sonora's built-in browser.
+- See your personal Last.fm artist and album play counts, and browse searchable all-time
+  rankings in Discover's Your listening tab with links to artist and album pages.
+  Album totals stay updated from your recent listening after the initial import.
 
 ## [0.42.2] - 2026-10-07
 
