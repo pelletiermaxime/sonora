@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Update checks now look for releases of this fork on pelletiermaxime/sonora.
+
 ## [1.0.1] - 2026-10-16
 
 ### Added

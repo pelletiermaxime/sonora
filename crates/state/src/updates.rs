@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{AppSettings, Io, join};
 
-const LATEST: &str = "https://api.github.com/repos/sonorahq/sonora/releases/latest";
+const LATEST: &str = "https://api.github.com/repos/pelletiermaxime/sonora/releases/latest";
 const INSTALLER: &str = match cfg!(target_arch = "aarch64") {
     true => "Sonora-Setup-arm64.exe",
     false => "Sonora-Setup.exe",
@@ -20,7 +20,7 @@ const INSTALLABLE: bool = cfg!(target_os = "windows");
 const AGENT: &str = concat!(
     "sonora/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/sonorahq/sonora)"
+    " (https://github.com/pelletiermaxime/sonora)"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
