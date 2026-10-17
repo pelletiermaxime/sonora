@@ -127,6 +127,9 @@ xattr -dr com.apple.quarantine /Applications/Sonora.app
 
 ### Linux
 
+Either `pipewire-alsa` or `pulseaudio-alsa` is required, matching your sound server. Sonora
+warns you at startup when the one your sound server needs is missing.
+
 #### Flatpak
 
 Download the `.flatpak` bundle for your architecture from this fork and install it locally:

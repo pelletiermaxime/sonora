@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/pelletiermaxime/sonora"
@@ -23,6 +23,7 @@ views = { path = "crates/views" }
 webview = { path = "crates/webview" }
 widevine = { path = "crates/widevine" }
 
+alsa = "0.10"
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
@@ -147,10 +148,11 @@ rusqlite = { version = "0.32" }
 rustfft = "6.4"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
 scraper = "0.27"
 serde_norway = "0.9"
 sha2 = "0.10"
+smallvec = { version = "1.15", features = ["union"] }
 souvlaki = "0.8"
 sys-locale = "0.3"
 symphonia = { version = "0.5.5", default-features = false, features = ["mkv", "ogg", "isomp4"] }

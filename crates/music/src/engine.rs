@@ -744,10 +744,15 @@ impl<F: Fetch> Playing<F> {
         }
     }
 
-    /// Pulls up to `frames` frames out of the decoder. `None` means the track ended.
-    fn take(&mut self, frames: usize) -> Option<Vec<f32>> {
-        let wanted = frames * usize::from(self.channels).max(1);
-        let mut samples = Vec::with_capacity(wanted);
+    /// How many samples `frames` frames of this track hold, across every channel.
+    fn samples(&self, frames: usize) -> usize {
+        frames * usize::from(self.channels).max(1)
+    }
+
+    /// Pulls up to `frames` frames out of the decoder into `samples`, which starts empty.
+    /// `None` means the track ended.
+    fn take(&mut self, frames: usize, mut samples: Vec<f32>) -> Option<Vec<f32>> {
+        let wanted = self.samples(frames);
         for sample in self.source.by_ref().take(wanted) {
             samples.push(sample * self.gain);
         }
@@ -1022,7 +1027,8 @@ fn audio_loop<F: Fetch>(
             return;
         }
 
-        let Some(samples) = held.take(CHUNK) else {
+        let buffer = paced.buffer(held.samples(CHUNK));
+        let Some(samples) = held.take(CHUNK, buffer) else {
             // the decoder is done, but its last samples are still queued
             let Some(Playing {
                 id: ended, loaded, ..
@@ -1052,13 +1058,14 @@ fn audio_loop<F: Fetch>(
             continue;
         };
 
-        let Some(chunk) = packet(&samples, held.channels, held.rate) else {
+        let count = samples.len() as u64;
+        let Some(chunk) = packet(samples, held.channels, held.rate) else {
             continue;
         };
         if paced.write(chunk).is_err() {
             return;
         }
-        written += samples.len() as u64;
+        written += count;
     }
 }
 

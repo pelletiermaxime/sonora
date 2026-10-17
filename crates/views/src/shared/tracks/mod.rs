@@ -517,14 +517,14 @@ impl TableSource for TrackSource {
     }
 
     fn matches(&self, row: usize, query: &str, cx: &App) -> bool {
-        self.at(row, cx).is_some_and(|track| {
-            if !self.sieve.keeps(&track) {
+        self.peek(row, cx).is_some_and(|track| {
+            if !self.sieve.keeps(track) {
                 return false;
             }
-            if self.sieve.favorites && !self.starred(&track, cx) {
+            if self.sieve.favorites && !self.starred(track, cx) {
                 return false;
             }
-            hits(&track, query)
+            hits(track, query)
         })
     }
 

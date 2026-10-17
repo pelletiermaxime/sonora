@@ -1960,7 +1960,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "embed"
-version = "1.0.0"
+version = "1.0.1"
 
 [[package]]
 name = "embed-resource"
@@ -3392,7 +3392,7 @@ dependencies = [
 
 [[package]]
 name = "i18n"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "fluent-bundle",
  "gpui",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "icons"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "embed",
@@ -3633,7 +3633,7 @@ dependencies = [
 
 [[package]]
 name = "input"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "gpui",
  "ui",
@@ -4609,8 +4609,9 @@ dependencies = [
 
 [[package]]
 name = "music"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
+ "alsa 0.10.0",
  "anyhow",
  "async-trait",
  "base64",
@@ -6670,7 +6671,7 @@ dependencies = [
 
 [[package]]
 name = "router"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "gpui",
  "ui",
@@ -7524,7 +7525,7 @@ dependencies = [
 
 [[package]]
 name = "sonora"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -7544,6 +7545,7 @@ dependencies = [
  "music",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "raw-window-handle",
  "reqwest 0.13.4",
  "resvg",
@@ -7566,7 +7568,7 @@ dependencies = [
 
 [[package]]
 name = "sonora-metal"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -7689,7 +7691,7 @@ dependencies = [
 
 [[package]]
 name = "state"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -7732,7 +7734,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -8847,7 +8849,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ashpd",
  "futures",
@@ -9188,7 +9190,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "views"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "gpui",
  "i18n",
@@ -9491,7 +9493,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -9756,7 +9758,7 @@ checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "widevine"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "cc",
@@ -9767,6 +9769,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde_json",
  "sha2",
+ "smallvec",
  "tokio",
  "windows-sys 0.61.2",
 ]

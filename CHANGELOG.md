@@ -7,6 +7,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-16
+
+### Added
+
+- Save songs to your library directly from listening history using the heart shown on hover.
+- Change text size with Ctrl+Plus and Ctrl+Minus, or Cmd on macOS, and reset it with Ctrl+0
+  or Cmd+0. Your chosen size is saved.
+- On macOS, choose native window corner sizes and hide the window control buttons in Settings.
+
+### Changed
+
+- Fullscreen lyrics scale up in larger windows, and Windows window controls use native icons.
+- Apple Music libraries use less memory while loading, with smoother memory use during playback.
+- Linux startup notices identify missing audio or browser sign-in dependencies. Notices include
+  a Don't show again option.
+
+### Fixed
+
+- Artist pages show complete discographies across YouTube Music, Apple Music, and Deezer.
+  Apple Music includes live albums, compilations, and alternate album editions.
+- Apple Music album artist links open the artist, and chart songs display and play as songs.
+- Queue drag-and-drop follows the displayed drop line, and seeking near the end of a song stays
+  within that song.
+- Lyrics sources that temporarily fail are retried the next time the song plays.
+- Spotify sign-in works on Windows on ARM, collaborative Spotify playlists can be edited,
+  and Spotify and Deezer profile pictures appear in Settings.
+- Artist cards avoid missing-name separators, and fullscreen controls hide without clipping
+  the seek bar.
+
 ## [1.0.0] - 2026-10-10
 
 ### Added
@@ -2020,8 +2049,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Initial release: a native Spotify client with playback, an interactive queue, the saved library,
 search, album, playlist, artist and song pages, context menus and adaptive theming.
 
-[unreleased]: https://github.com/sonorahq/sonora/compare/v0.42.2...HEAD
-[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.0...main
+[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.1...main
+[1.0.1]: https://github.com/pelletiermaxime/sonora/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pelletiermaxime/sonora/releases/tag/v1.0.0
 [0.42.2]: https://github.com/sonorahq/sonora/compare/v0.42.1...v0.42.2
 [0.42.1]: https://github.com/sonorahq/sonora/compare/v0.42.0...v0.42.1

@@ -275,8 +275,9 @@ impl Client {
 
     fn snapshot<T: DeserializeOwned>(&self, key: &str) -> Result<Option<Snapshot<T>>> {
         self.cache
-            .read(key)?
-            .map(|s| serde_json::from_str(&s).context("cannot decode metal cache"))
+            .read(key, |s| {
+                serde_json::from_str(s).context("cannot decode metal cache")
+            })?
             .transpose()
     }
 
@@ -862,7 +863,7 @@ impl Client {
         {
             let _operation = self.lastfm_operation.lock().await;
             if seed.as_ref().is_some_and(|path| path.is_file())
-                && self.cache.read(owner_key)?.is_none()
+                && self.cache.read(owner_key, |_| ())?.is_none()
             {
                 self.cache.write(owner_key, &username_key, now() as i64)?;
             }
@@ -922,8 +923,8 @@ impl Client {
                     let _operation = self.lastfm_operation.lock().await;
                     if self
                         .cache
-                        .read(owner_key)?
-                        .is_some_and(|owner| owner != username_key)
+                        .read(owner_key, |owner| owner != username_key)?
+                        .unwrap_or(false)
                     {
                         return Err(error);
                     }
@@ -1157,13 +1158,17 @@ impl Client {
         api_key: &str,
         params: &[(&str, String)],
     ) -> Result<Value> {
-        if let Some(deadline) = self.cache.read(LASTFM_RETRY_KEY)? {
-            let retry_at: u64 = deadline
-                .parse()
-                .context("cannot decode Last.fm retry deadline")?;
-            if retry_at > now() {
-                return Err(LastfmAccessError { retry_at }.into());
-            }
+        if let Some(retry_at) = self
+            .cache
+            .read(LASTFM_RETRY_KEY, |deadline| {
+                deadline
+                    .parse::<u64>()
+                    .context("cannot decode Last.fm retry deadline")
+            })?
+            .transpose()?
+            && retry_at > now()
+        {
+            return Err(LastfmAccessError { retry_at }.into());
         }
         let mut query = params.to_vec();
         query.extend([
@@ -1217,13 +1222,15 @@ impl Client {
 
     /// Migrates the old artificial refusal timer while retaining request accounting.
     fn policy(&self) -> Result<Policy> {
-        if let Some(value) = self.cache.read(POLICY_KEY)? {
-            return serde_json::from_str(&value).context("cannot decode request policy");
+        if let Some(policy) = self
+            .cache
+            .read(POLICY_KEY, |value| serde_json::from_str(value))?
+        {
+            return policy.context("cannot decode request policy");
         }
         let mut policy: Policy = self
             .cache
-            .read(LEGACY_POLICY_KEY)?
-            .map(|value| serde_json::from_str(&value))
+            .read(LEGACY_POLICY_KEY, |value| serde_json::from_str(value))?
             .transpose()?
             .unwrap_or_default();
         policy.blocked_until = 0;

@@ -1,7 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use gpui::Decorations;
 use gpui::prelude::*;
-use gpui::{AnyElement, Window, div, px};
+use gpui::{AnyElement, Window, div};
 use gpui::{
     AnyView, Context, Entity, EventEmitter, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Render,
@@ -16,10 +16,22 @@ use state::{AppSettings, Sonora};
 
 const SYSTEM_ZOOMS: bool = cfg!(target_os = "windows");
 
+/// The height of AppKit's traffic-light buttons, which the bar centres them by.
 #[cfg(target_os = "macos")]
-const TITLE_BAR_LEFT_INSET: f32 = 74.;
-#[cfg(not(target_os = "macos"))]
-const TITLE_BAR_LEFT_INSET: f32 = 12.;
+const TRAFFIC_LIGHTS_SIZE: f32 = 14.;
+/// The extra room round corners leave before the traffic lights, since their wider curve
+/// otherwise crowds the close button.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS_ROUND_PAD: f32 = 4.;
+/// The bar's bottom border, which sits inside its height and so out of the centring.
+#[cfg(target_os = "macos")]
+const TITLE_BAR_BORDER: f32 = 1.;
+/// Where hidden traffic lights go: past the window's left edge, where nothing draws or hits them.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS_HIDDEN: f32 = -200.;
+/// The width of the three traffic lights and the gap the title bar leaves after them.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS_SPAN: f32 = 65.;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct TitleBarOptions {
@@ -150,7 +162,6 @@ impl TitleBar {
                         false => "icons/panel-right-open.svg",
                     })
                     .tooltip("nav-sidebar-right")
-                    .selected(open)
                     .on_click(
                         cx.listener(|_, _, _, cx| cx.emit(TitleBarEvent::ToggleSidebarRight)),
                     ),
@@ -198,6 +209,7 @@ impl Render for TitleBar {
             matches!(window.window_decorations(), Decorations::Client { .. }) && !window_fullscreen;
         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         let controls = settings.window_controls() && !window_fullscreen;
+        let inset = traffic_lights_inset(settings, height);
         let decorated = cfg!(not(target_os = "macos")) && controls;
         let leading = decorated && settings.controls_on_left();
         #[cfg(not(target_os = "macos"))]
@@ -254,11 +266,11 @@ impl Render for TitleBar {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .when_else(
-                        leading,
-                        |this| this.pl_2(),
-                        |this| this.pl(px(TITLE_BAR_LEFT_INSET)),
-                    )
+                    .map(|this| match (leading, inset) {
+                        (true, _) => this.pl_2(),
+                        (false, Some(inset)) => this.pl(inset),
+                        (false, None) => this.pl_3(),
+                    })
                     .pr_3()
                     .gap_1()
                     .when(offset > Pixels::ZERO, |this| this.w(offset))
@@ -300,6 +312,46 @@ impl Render for TitleBar {
                 )
             })
     }
+}
+
+/// Where AppKit's traffic lights sit for the current settings and a title bar of `height`,
+/// measured from the window's top-left corner. They are centred in the bar and kept as far from
+/// the left edge as from the top, which centres them in the corner, with a little more room for
+/// round corners. Hidden controls are moved off the window, since AppKit rebuilds them.
+#[cfg(target_os = "macos")]
+pub fn traffic_lights(settings: &AppSettings, height: Pixels) -> gpui::Point<Pixels> {
+    let left = match settings.window_controls() {
+        true => traffic_lights_left(settings, height),
+        false => gpui::px(TRAFFIC_LIGHTS_HIDDEN),
+    };
+    gpui::point(left, traffic_lights_offset(height))
+}
+
+#[cfg(target_os = "macos")]
+fn traffic_lights_left(settings: &AppSettings, height: Pixels) -> Pixels {
+    let pad = match settings.window_rounding() {
+        ui::Rounding::Round => gpui::px(TRAFFIC_LIGHTS_ROUND_PAD),
+        _ => Pixels::ZERO,
+    };
+    traffic_lights_offset(height) + pad
+}
+
+#[cfg(target_os = "macos")]
+fn traffic_lights_offset(height: Pixels) -> Pixels {
+    let room = height - gpui::px(TITLE_BAR_BORDER + TRAFFIC_LIGHTS_SIZE);
+    room / 2.
+}
+
+/// How far past the traffic lights the title bar's content starts while macOS shows them, or
+/// `None` when it takes the same padding as the right edge.
+fn traffic_lights_inset(settings: &AppSettings, height: Pixels) -> Option<Pixels> {
+    #[cfg(target_os = "macos")]
+    if settings.window_controls() {
+        return Some(traffic_lights_left(settings, height) + gpui::px(TRAFFIC_LIGHTS_SPAN));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (settings, height);
+    None
 }
 
 fn window_controls(leading: bool, traffic_light: bool) -> AnyElement {

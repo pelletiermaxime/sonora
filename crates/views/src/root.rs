@@ -1,5 +1,5 @@
 use gpui::{AnyView, Context, Entity, MouseButton, NavigationDirection, Render, Task};
-use gpui::{App, Font, FontFallbacks, SharedString, font, prelude::*};
+use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelude::*};
 use gpui::{Window, div};
 use input::{
     CloseWindow, MinimizeWindow, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
@@ -90,8 +90,14 @@ pub struct Root {
     screens: Screens,
     adaptive: Entity<Adaptive>,
     background: Option<gpui::WindowBackgroundAppearance>,
+    /// The font the window is set in and the name it was built from, rebuilt only when the
+    /// chosen font changes since the root renders every frame anything below it animates.
+    font: Option<(String, Font)>,
     #[cfg(target_os = "windows")]
     rounded: Option<ui::Rounding>,
+    /// The corners and traffic-light position last handed to AppKit.
+    #[cfg(target_os = "macos")]
+    framed: Option<(ui::Rounding, gpui::Point<gpui::Pixels>)>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     decorations: gpui::WindowDecorations,
 }
@@ -315,8 +321,11 @@ impl Root {
             adaptive,
             ambient,
             background: None,
+            font: None,
             #[cfg(target_os = "windows")]
             rounded: None,
+            #[cfg(target_os = "macos")]
+            framed: None,
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             decorations: Sonora::global(cx).settings.read(cx).window_decorations(),
         };
@@ -541,6 +550,19 @@ impl Root {
         }));
     }
 
+    /// The font the window is set in, built again only once a different font is chosen.
+    fn font(&mut self, cx: &App) -> Font {
+        let chosen = Sonora::global(cx).settings.read(cx).font();
+        match &self.font {
+            Some((name, font)) if name == chosen => font.clone(),
+            _ => {
+                let font = ui_font(chosen);
+                self.font = Some((chosen.to_owned(), font.clone()));
+                font
+            }
+        }
+    }
+
     /// How much of the shell its entrance still hides, asking for the next frame while it runs.
     /// A see-through window fades the shell itself, so every frame of that fade is a full
     /// refresh, or the workspace's cached views would replay the opacity they were first
@@ -711,8 +733,7 @@ const SCRIPTS: [&str; 18] = [
     "Segoe UI Emoji",
 ];
 
-fn ui_font(cx: &App) -> Font {
-    let chosen = Sonora::global(cx).settings.read(cx).font();
+fn ui_font(chosen: &str) -> Font {
     match chosen == SYSTEM_FONT {
         true => Font {
             fallbacks: Some(scripts(false).clone()),
@@ -806,6 +827,28 @@ impl Render for Root {
             }
         }
 
+        // AppKit lays the window out again while its toolbar changes and calls back into it, so
+        // the change waits until this frame has drawn. Fullscreen has no corners to pick, and
+        // AppKit puts the traffic lights back itself on the way out.
+        #[cfg(target_os = "macos")]
+        if !window.is_fullscreen() {
+            let settings = Sonora::global(cx).settings.read(cx);
+            let framed = (
+                settings.window_rounding(),
+                crate::chrome::traffic_lights(
+                    settings,
+                    ui::snapped(theme.metrics.title_bar, window),
+                ),
+            );
+            if self.framed != Some(framed) {
+                self.framed = Some(framed);
+                window.defer(cx, move |window, cx| {
+                    state::apply_window_rounding(window, framed.0, cx);
+                    window.set_traffic_light_position(framed.1);
+                });
+            }
+        }
+
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             let decorations = Sonora::global(cx).settings.read(cx).window_decorations();
@@ -871,7 +914,7 @@ impl Render for Root {
         let root = div()
             .relative()
             .flex()
-            .font(ui_font(cx))
+            .font(self.font(cx))
             .flex_col()
             .size_full()
             .when_some(radius, |this, radius| {
@@ -933,7 +976,16 @@ impl Render for Root {
             )
             // The ambient background sits behind everything, title bar included.
             .when(ambient, |this| this.child(self.ambient.clone()))
-            .child(self.title_bar.clone())
+            // The bar only changes when it is told to, so a frame drawn for the lyrics or the
+            // progress bar replays it rather than building it again.
+            .child(
+                self.title_bar.clone().cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(ui::snapped(theme.metrics.title_bar, window))
+                        .flex_none(),
+                ),
+            )
             .when_else(
                 show_sign_in,
                 |this| this.child(div().flex().flex_1().min_h_0().child(self.login.clone())),

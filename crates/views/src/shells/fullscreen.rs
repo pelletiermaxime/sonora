@@ -360,26 +360,27 @@ impl FullscreenView {
         let radius = cx.theme().radius * 2.;
         let pad = px(COVER_LAYER_PAD);
         let inset = (layout_side - raster_side) / 2. - pad;
-        let track = self.playback.read(cx).track().cloned();
-        let album = track.as_ref().and_then(|track| track.album_id.clone());
-        let small = track.as_ref().and_then(|track| track.cover.clone());
+        let (album, small, local_id) = match self.playback.read(cx).track() {
+            Some(track) => (
+                track.album_id.clone(),
+                track.cover.clone(),
+                track.id.as_deref().is_some_and(music::is_local_id),
+            ),
+            None => (None, None, false),
+        };
         let cover_large = self.cover.read(cx).large();
-        let local = track
-            .as_ref()
-            .and_then(|track| track.id.as_deref())
-            .is_some_and(music::is_local_id)
-            || small.as_ref().is_some_and(|url| url.starts_with("file://"));
+        let local = local_id || small.as_ref().is_some_and(|url| url.starts_with("file://"));
         // Only upgrade resolution for non-local tracks, since a local cover is always
         // the full resolution picture. The track's own embedded cover is prioritized
         // over the cover of its album.
-        let large = cover_large
-            .filter(|url| !local && small.is_some() && Some(*url) != small.as_deref())
-            .map(SharedString::from);
+        let large =
+            cover_large.filter(|url| !local && small.is_some() && Some(*url) != small.as_deref());
 
-        if self.large != large {
-            self.large = large.clone();
+        if self.large.as_deref() != large {
+            self.large = large.map(SharedString::from);
             self.revision += 1;
         }
+        let large = self.large.clone();
         let revision = self.revision;
         let waiting = !local && album.is_some() && cover_large.is_none();
 
@@ -440,21 +441,20 @@ impl FullscreenView {
     fn meta(&self, hide: f32, lift: Pixels, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
         let frosted = ambient::shown(cx);
-        let track = self.playback.read(cx).track().cloned();
-        let title = match &track {
+        let track = self.playback.read(cx).track();
+        let title = match track {
             Some(track) => SharedString::from(track.name.clone()),
             None => t!("player-nothing-playing"),
         };
-        let album = track.as_ref().and_then(|track| track.album_id.clone());
-        let explicit = track.as_ref().is_some_and(|track| track.explicit);
-        let held = track.clone();
+        let album = track.and_then(|track| track.album_id.clone());
+        let explicit = track.is_some_and(|track| track.explicit);
         let meta_bounds = self.meta_bounds.clone();
         // Both lines carry a shadow in the page colour, so they stay legible where a visualizer
         // peak or bright ambient art passes behind them. The title ellipsizes without
         // `truncate`, whose `overflow_hidden` would clip the shadow to the line box.
         let effects = shared::effects();
         let shadow = TEXT_SHADOW.map(|blur| TextShadow::new(theme.background).blur(px(blur)));
-        let trailing = |track: Option<music::Track>, cx: &App| {
+        let trailing = |track: Option<&music::Track>, cx: &App| {
             div()
                 .flex()
                 .flex_none()
@@ -468,7 +468,7 @@ impl FullscreenView {
                         .flex()
                         .flex_none()
                         .opacity(1. - hide)
-                        .child(like(track, cx).when(frosted, Button::frosted)),
+                        .child(like(track, &self.playback, cx).when(frosted, Button::frosted)),
                 )
         };
 
@@ -525,7 +525,8 @@ impl FullscreenView {
                             .on_mouse_down(
                                 MouseButton::Right,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    let Some(track) = held.clone() else {
+                                    let Some(track) = this.playback.read(cx).track().cloned()
+                                    else {
                                         return;
                                     };
                                     window.prevent_default();
@@ -536,17 +537,20 @@ impl FullscreenView {
                             .when(effects, |this| this.text_shadow(shadow))
                             .child(title),
                     )
-                    .child(div().flex().flex_1().child(trailing(track.clone(), cx))),
+                    .child(div().flex().flex_1().child(trailing(track, cx))),
             )
             .when_some(track, |this, track| {
                 this.child(
                     div().flex().w_full().min_w_0().justify_center().child(
                         InlineLinks::new(
                             "fullscreen-artists",
-                            track.artist_refs.into_iter().map(|artist| {
-                                InlineLink::new(artist.name, artist.id.map(Into::into))
+                            track.artist_refs.iter().map(|artist| {
+                                InlineLink::new(
+                                    artist.name.clone(),
+                                    artist.id.clone().map(Into::into),
+                                )
                             }),
-                            track.artists,
+                            track.artists.clone(),
                             theme.muted_foreground,
                         )
                         .text_size(theme.text(Text::Body))
@@ -562,14 +566,13 @@ impl FullscreenView {
         let theme = *cx.theme();
         let frosted = ambient::shown(cx);
         let cover = ui::snapped(theme.metrics.row, window);
-        let track = self.playback.read(cx).track().cloned();
-        let title = match &track {
+        let track = self.playback.read(cx).track();
+        let title = match track {
             Some(track) => SharedString::from(track.name.clone()),
             None => t!("player-nothing-playing"),
         };
-        let album = track.as_ref().and_then(|track| track.album_id.clone());
-        let explicit = track.as_ref().is_some_and(|track| track.explicit);
-        let held = track.clone();
+        let album = track.and_then(|track| track.album_id.clone());
+        let explicit = track.is_some_and(|track| track.explicit);
 
         div()
             .flex()
@@ -584,7 +587,7 @@ impl FullscreenView {
                         this.cursor_pointer()
                             .on_click(move |_, _, cx| open_album(&album, cx))
                     })
-                    .child(Artwork::new(track.as_ref().and_then(|t| t.cover.clone())).size(cover)),
+                    .child(Artwork::new(track.and_then(|t| t.cover.clone())).size(cover)),
             )
             .child(
                 div()
@@ -614,7 +617,9 @@ impl FullscreenView {
                                         MouseButton::Right,
                                         cx.listener(
                                             move |this, event: &MouseDownEvent, window, cx| {
-                                                let Some(track) = held.clone() else {
+                                                let Some(track) =
+                                                    this.playback.read(cx).track().cloned()
+                                                else {
                                                     return;
                                                 };
                                                 window.prevent_default();
@@ -628,22 +633,21 @@ impl FullscreenView {
                             .when(explicit, |this| {
                                 this.child(div().flex_none().child(ExplicitBadge::new()))
                             })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .opacity(1. - hide)
-                                    .child(like(track.clone(), cx).when(frosted, Button::frosted)),
-                            ),
+                            .child(div().flex().flex_none().opacity(1. - hide).child(
+                                like(track, &self.playback, cx).when(frosted, Button::frosted),
+                            )),
                     )
                     .when_some(track, |this, track| {
                         this.child(
                             InlineLinks::new(
                                 "strip-artists",
-                                track.artist_refs.into_iter().map(|artist| {
-                                    InlineLink::new(artist.name, artist.id.map(Into::into))
+                                track.artist_refs.iter().map(|artist| {
+                                    InlineLink::new(
+                                        artist.name.clone(),
+                                        artist.id.clone().map(Into::into),
+                                    )
                                 }),
-                                track.artists,
+                                track.artists.clone(),
                                 theme.muted_foreground,
                             )
                             .text_size(theme.text(Text::Small))
@@ -1148,7 +1152,7 @@ impl Render for FullscreenView {
 
         div()
             .id("fullscreen")
-            .key_context(WORKSPACE_CONTEXT)
+            .key_context(super::shell_context(WORKSPACE_CONTEXT))
             .track_focus(&self.focus)
             .relative()
             .flex()

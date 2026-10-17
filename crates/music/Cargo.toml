@@ -54,6 +54,9 @@ tokio.workspace = true
 widevine.workspace = true
 ytmusic.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa.workspace = true
+
 [dev-dependencies]
 env_logger.workspace = true
 rustls.workspace = true

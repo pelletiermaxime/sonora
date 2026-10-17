@@ -32,7 +32,10 @@ actions!(
         ToggleWindowFullscreen,
         Hide,
         HideOthers,
-        ShowAll
+        ShowAll,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize
     ]
 );
 
@@ -100,6 +103,14 @@ fn shared() -> Vec<KeyBinding> {
         KeyBinding::new("shift-ctrl-f", OpenSearch, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-=", IncreaseFontSize, None),
+        KeyBinding::new("ctrl-=", IncreaseFontSize, None),
+        KeyBinding::new("cmd-+", IncreaseFontSize, None),
+        KeyBinding::new("ctrl-+", IncreaseFontSize, None),
+        KeyBinding::new("cmd--", DecreaseFontSize, None),
+        KeyBinding::new("ctrl--", DecreaseFontSize, None),
+        KeyBinding::new("cmd-0", ResetFontSize, None),
+        KeyBinding::new("ctrl-0", ResetFontSize, None),
         KeyBinding::new("space", TogglePlayback, Some(&away_from_text)),
         KeyBinding::new("ctrl-left", SongPrevious, Some(&away_from_text)),
         KeyBinding::new("ctrl-right", SongNext, Some(&away_from_text)),

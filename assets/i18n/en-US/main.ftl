@@ -1042,9 +1042,20 @@ update-detail = You are on { $running }. Read what changed, or update now.
 update-detail-notes = You are on { $running }. Read what changed, then update Sonora the way you installed it.
 update-notes = What's new
 update-now = Update
-update-later = Later
 update-working = Downloading the update…
 update-failed = The update could not be installed. Try again from the releases page.
+update-never = Don't check for updates
+notice-never = Don't show again
+requirement-audio-bridge-title = Sonora cannot reach your sound server
+requirement-audio-bridge = { $server ->
+    [pulseaudio] PulseAudio is running, but ALSA has no route to it, so nothing you play is heard. Install pulseaudio-alsa and restart Sonora.
+   *[pipewire] PipeWire is running, but ALSA has no route to it, so nothing you play is heard. Install pipewire-alsa and restart Sonora.
+}
+requirement-audio-output-title = No sound output
+requirement-audio-output = Sonora could not open your audio device, so nothing you play is heard. Check that a device is connected and not held by another app.
+requirement-web-engine-title = Browser sign-in is unavailable
+requirement-web-engine = Install webkit2gtk-4.1 to sign in to YouTube Music, Deezer or Apple Music in a browser window. Until then, paste your cookies instead.
+requirement-help = What to install
 settings-check-updates = Check for updates
 settings-check-updates-detail = Ask GitHub once at startup whether a newer version is out. Sonora installs the update itself on Windows only; elsewhere it points you at what changed
 settings-log = Log file

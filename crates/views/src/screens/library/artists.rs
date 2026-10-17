@@ -105,7 +105,7 @@ impl TableSource for ArtistSource {
     }
 
     fn matches(&self, row: usize, query: &str, cx: &App) -> bool {
-        self.at(row, cx).is_some_and(|artist| {
+        self.artists(cx).get(row).is_some_and(|artist| {
             if self.starred && !self.library.read(cx).saved_artist(&artist.id) {
                 return false;
             }

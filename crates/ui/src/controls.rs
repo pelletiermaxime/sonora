@@ -165,17 +165,14 @@ impl RenderOnce for WindowControls {
         let theme = *cx.theme();
         let overrides = std::mem::take(self.base.style());
 
-        let mut wanted: Vec<Control> = [
+        let mut wanted = [
             supported.minimize.then_some(Control::Minimize),
             supported.maximize.then_some(match maximized {
                 true => Control::Restore,
                 false => Control::Maximize,
             }),
             Some(Control::Close),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        ];
 
         if self.leading {
             wanted.reverse();
@@ -195,7 +192,7 @@ impl RenderOnce for WindowControls {
             .when(!SYSTEM_ACTS, |this| {
                 this.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             })
-            .children(wanted.into_iter().map(move |control| {
+            .children(wanted.into_iter().flatten().map(move |control| {
                 let danger = control == Control::Close;
 
                 div()
