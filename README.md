@@ -100,7 +100,7 @@ The screenshots below show the upstream player; they are not screenshots of the 
 
 ## Features
 
-- **Apple Music, Spotify, YouTube Music, Deezer, Subsonic/Navidrome** and local playback
+- **Apple Music, Spotify, YouTube Music, Deezer, Tidal, Subsonic/Navidrome** and local playback
 - Gapless playback, audio normalization, shuffle, sleep timer
 - Synced/karaoke lyrics, background vocals, and romanization
 - Scrobbling with LastFM, ListenBrainz, LibreFM, and Maloja
@@ -232,21 +232,21 @@ AI-assisted proofreading and translation of human-written text are permitted.
 
 | Language | Translated | Coverage |
 | --- | --- | --- |
-| English (`en-US`) | 873/873 | 100% |
-| Deutsch (`de`) | 628/873 | 72% |
-| Español (`es`) | 690/873 | 79% |
-| Français (`fr`) | 749/873 | 86% |
-| Italiano (`it`) | 605/873 | 69% |
-| Bahasa Indonesia (`id`) | 605/873 | 69% |
-| 日本語 (`ja`) | 605/873 | 69% |
-| Русский (`ru`) | 711/873 | 81% |
-| Українська (`uk`) | 711/873 | 81% |
-| Polski (`pl`) | 711/873 | 81% |
-| Čeština (`cs`) | 743/873 | 85% |
-| Português (Brasil) (`pt-BR`) | 605/873 | 69% |
-| 简体中文 (`zh-CN`) | 605/873 | 69% |
-| Türkçe (`tr`) | 605/873 | 69% |
-| Shqip (`sq`) | 714/873 | 82% |
+| English (`en-US`) | 1258/1258 | 100% |
+| Deutsch (`de`) | 1114/1258 | 89% |
+| Español (`es`) | 1114/1258 | 89% |
+| Français (`fr`) | 1114/1258 | 89% |
+| Italiano (`it`) | 1114/1258 | 89% |
+| Bahasa Indonesia (`id`) | 1114/1258 | 89% |
+| 日本語 (`ja`) | 1114/1258 | 89% |
+| Русский (`ru`) | 1114/1258 | 89% |
+| Українська (`uk`) | 1114/1258 | 89% |
+| Polski (`pl`) | 1114/1258 | 89% |
+| Čeština (`cs`) | 1114/1258 | 89% |
+| Português (Brasil) (`pt-BR`) | 1114/1258 | 89% |
+| 简体中文 (`zh-CN`) | 1114/1258 | 89% |
+| Türkçe (`tr`) | 1114/1258 | 89% |
+| Shqip (`sq`) | 1114/1258 | 89% |
 
 <!-- i18n:end -->
 
@@ -268,7 +268,7 @@ Sonora is built with the help of some incredible open-source projects, including
 - [librespot](https://github.com/librespot-org/librespot) — Spotify playback and library integration.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — certain YouTube ideas implemented in [ytmusic-rs](https://github.com/sonorahq/ytmusic-rs) :)
 
-## Code signing
+## Code signing policy
 
 This fork's Windows releases are unsigned. macOS bundles use ad hoc signing and are not
 notarized. Upstream's signing applications and certificates do not apply to this fork.

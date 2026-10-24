@@ -12,7 +12,7 @@ actions!(
     [
         Quit,
         SignOut,
-        RefreshLibrary,
+        Refresh,
         TogglePlayback,
         SongPrevious,
         SongNext,
@@ -35,7 +35,9 @@ actions!(
         ShowAll,
         IncreaseFontSize,
         DecreaseFontSize,
-        ResetFontSize
+        ResetFontSize,
+        Undo,
+        Redo
     ]
 );
 
@@ -95,8 +97,8 @@ fn shared() -> Vec<KeyBinding> {
         KeyBinding::new("alt-right", NavigateForward, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("ctrl-q", Quit, None),
-        KeyBinding::new("cmd-r", RefreshLibrary, None),
-        KeyBinding::new("ctrl-r", RefreshLibrary, None),
+        KeyBinding::new("cmd-r", Refresh, None),
+        KeyBinding::new("ctrl-r", Refresh, None),
         KeyBinding::new("cmd-f", OpenFilter, None),
         KeyBinding::new("ctrl-f", OpenFilter, None),
         KeyBinding::new("shift-cmd-f", OpenSearch, None),
@@ -116,6 +118,11 @@ fn shared() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-right", SongNext, Some(&away_from_text)),
         KeyBinding::new("f", ToggleFullscreen, Some(&away_from_text)),
         KeyBinding::new("f11", ToggleWindowFullscreen, None),
+        KeyBinding::new("cmd-z", Undo, Some(&away_from_text)),
+        KeyBinding::new("ctrl-z", Undo, Some(&away_from_text)),
+        KeyBinding::new("shift-cmd-z", Redo, Some(&away_from_text)),
+        KeyBinding::new("shift-ctrl-z", Redo, Some(&away_from_text)),
+        KeyBinding::new("ctrl-y", Redo, Some(&away_from_text)),
         KeyBinding::new("escape", Dismiss, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new("backspace", Backspace, editing),
         KeyBinding::new("ctrl-backspace", BackspaceWord, editing),

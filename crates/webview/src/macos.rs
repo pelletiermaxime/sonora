@@ -64,7 +64,7 @@ impl Window {
         if let Some(agent) = target
             .agent
             .as_deref()
-            .or_else(|| (!target.interactive).then_some(USER_AGENT))
+            .or_else(|| (!target.interactive && !target.scripted()).then_some(USER_AGENT))
         {
             unsafe { view.setCustomUserAgent(Some(&NSString::from_str(agent))) };
         }
@@ -183,6 +183,14 @@ impl Window {
             return;
         };
         unsafe { self.view.loadRequest(&NSURLRequest::requestWithURL(&url)) };
+    }
+
+    /// Evaluates `script` in the page world, where the user script runs too.
+    pub(crate) fn run(&self, script: &str) {
+        unsafe {
+            self.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(script), None)
+        };
     }
 
     pub(crate) fn close(&self) {

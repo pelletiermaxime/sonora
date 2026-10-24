@@ -1,5 +1,5 @@
 //! The backend for platforms without a sign-in window yet. macOS, Windows and Linux each have
-//! one; anything else fits the same six calls they implement.
+//! one; anything else fits the same seven calls they implement.
 
 use anyhow::{Result, bail};
 
@@ -33,6 +33,7 @@ impl Window {
     pub(crate) fn show(&mut self) {}
 
     pub(crate) fn hide(&mut self) {}
+    pub(crate) fn run(&self, _script: &str) {}
 
     pub(crate) fn close(&self) {}
 }
