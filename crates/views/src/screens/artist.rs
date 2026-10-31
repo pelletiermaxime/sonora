@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Pixels, Point, Render, ScrollHandle,
@@ -676,6 +677,7 @@ impl ArtistView {
                     })
                     .collect();
                 let rows = shown.len().div_ceil(columns);
+                let total = shown.len();
                 let height = Card::tile_height(grid.card, window, cx);
                 let width = self.width;
                 let card = grid.card;
@@ -698,19 +700,17 @@ impl ArtistView {
                         // cost of scrolling a long discography.
                         let held = view.read(cx);
                         let listed = held.detail.read(cx).albums();
-                        let cards = shown[start..end].iter().filter_map(|&index| {
-                            let album = listed.get(index)?;
+                        let cards = (start..end).filter_map(|seat| {
+                            let album = listed.get(shown[seat])?;
+                            let id = SharedString::from(format!("artist-release-{}", album.id));
 
                             Some(
-                                cards::album_card(
-                                    ("artist-release", index),
-                                    album,
-                                    &held.playback,
-                                    cx,
-                                )
-                                .tile(card)
-                                .flat()
-                                .into_any_element(),
+                                cards::album_card(id, album, &held.playback, cx)
+                                    .tile(card)
+                                    .flat()
+                                    .aria_position_in_set(seat + 1)
+                                    .aria_size_of_set(total)
+                                    .into_any_element(),
                             )
                         });
 
@@ -726,12 +726,17 @@ impl ArtistView {
                 .flex_col()
                 .gap_3()
                 .pt_6()
-                .child(
+                .child({
+                    let label = t!("artist-releases");
                     div()
+                        .id("artist-releases-heading")
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(label.clone())
                         .text_size(theme.text(Text::Title))
                         .font_weight(FontWeight::BOLD)
-                        .child(t!("artist-releases")),
-                )
+                        .child(label)
+                })
                 .when(!filters.is_empty(), |this| {
                     this.child(
                         div()
@@ -743,6 +748,7 @@ impl ArtistView {
                                     .small()
                                     .outline()
                                     .selected(self.release_filter == filter)
+                                    .aria_toggled(Toggled::from(self.release_filter == filter))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if this.release_filter == filter {
                                             return;
@@ -786,6 +792,7 @@ impl ArtistView {
                 .trailing(chevron(expanded))
                 .small()
                 .ghost()
+                .aria_expanded(expanded)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.set_release_view(this.release_filter, !expanded, columns, window, cx);
                 })),
@@ -840,9 +847,12 @@ impl ArtistView {
                         let Some(album) = detail.appears_on().get(index) else {
                             return div().into_any_element();
                         };
-                        cards::album_card(("artist-appears", index), album, &held.playback, cx)
+                        let id = SharedString::from(format!("artist-appears-{}", album.id));
+                        cards::album_card(id, album, &held.playback, cx)
                             .tile(card)
                             .flat()
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(appears)
                             .into_any_element()
                     },
                 ))
@@ -866,6 +876,7 @@ impl ArtistView {
                 .trailing(chevron(expanded))
                 .small()
                 .ghost()
+                .aria_expanded(expanded)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.shown.set(match expanded {
                         true => LISTED,
@@ -1390,7 +1401,13 @@ impl Tooled for ArtistView {
 impl Render for ArtistView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(failure) = self.failure(cx) {
-            return div().relative().size_full().child(failure);
+            return div()
+                .id("artist-failure")
+                .role(Role::Alert)
+                .relative()
+                .size_full()
+                .child(failure)
+                .into_any_element();
         }
 
         let theme = *cx.theme();
@@ -1459,12 +1476,17 @@ impl Render for ArtistView {
             .pb(inset)
             .on_scroll_wheel(cx.listener(Self::release_scroll))
             .child(div().child(head).when(listed, |this| {
+                let label = t!("artist-popular");
                 this.child(
                     div()
+                        .id("artist-popular-heading")
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(label.clone())
                         .pb_3()
                         .text_size(theme.text(Text::Title))
                         .font_weight(FontWeight::BOLD)
-                        .child(t!("artist-popular")),
+                        .child(label),
                 )
             }))
             .child(tracks)
@@ -1491,6 +1513,7 @@ impl Render for ArtistView {
                 &Sonora::global(cx).metal,
                 cx,
             ))
+            .into_any_element()
     }
 }
 

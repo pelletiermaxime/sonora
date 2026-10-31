@@ -118,7 +118,8 @@ download artifacts from a successful manual release workflow run.
 ### macOS
 
 Download the fork's `sonora-*-macos.dmg`, then drag `Sonora.app` into Applications. The bundle
-contains both Apple Silicon and Intel executables. It is ad hoc signed and not notarized.
+contains both Apple Silicon and Intel executables and can update itself from this fork's releases.
+It is ad hoc signed and not notarized.
 If macOS quarantines the downloaded app, remove quarantine after checking its source:
 
 ```sh
@@ -153,10 +154,10 @@ chmod +x sonora-*.AppImage
 ```
 
 An `aarch64` build is published beside it. The AppImage carries no Vulkan driver and no ALSA
-bridge, so both still come from your system. It does not update itself, but it carries its update
-information, so [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) or an
-AppImage manager such as [AppManager](https://github.com/kem-a/AppManager) can fetch a new release
-for you.
+bridge, so both still come from your system. It can update itself from this fork's releases.
+It also carries update information for
+[AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) and AppImage managers
+such as [AppManager](https://github.com/kem-a/AppManager).
 
 Linux native builds also need an ALSA bridge matching the sound server (`pipewire-alsa` or
 `pulseaudio-alsa`) and a Vulkan driver. The built-in browser needs WebKitGTK 4.1 or 4.0 on
@@ -232,21 +233,21 @@ AI-assisted proofreading and translation of human-written text are permitted.
 
 | Language | Translated | Coverage |
 | --- | --- | --- |
-| English (`en-US`) | 1258/1258 | 100% |
-| Deutsch (`de`) | 1114/1258 | 89% |
-| Español (`es`) | 1114/1258 | 89% |
-| Français (`fr`) | 1114/1258 | 89% |
-| Italiano (`it`) | 1114/1258 | 89% |
-| Bahasa Indonesia (`id`) | 1114/1258 | 89% |
-| 日本語 (`ja`) | 1114/1258 | 89% |
-| Русский (`ru`) | 1114/1258 | 89% |
-| Українська (`uk`) | 1114/1258 | 89% |
-| Polski (`pl`) | 1114/1258 | 89% |
-| Čeština (`cs`) | 1114/1258 | 89% |
-| Português (Brasil) (`pt-BR`) | 1114/1258 | 89% |
-| 简体中文 (`zh-CN`) | 1114/1258 | 89% |
-| Türkçe (`tr`) | 1114/1258 | 89% |
-| Shqip (`sq`) | 1114/1258 | 89% |
+| English (`en-US`) | 1323/1323 | 100% |
+| Deutsch (`de`) | 1129/1323 | 85% |
+| Español (`es`) | 1129/1323 | 85% |
+| Français (`fr`) | 1130/1323 | 85% |
+| Italiano (`it`) | 1129/1323 | 85% |
+| Bahasa Indonesia (`id`) | 1129/1323 | 85% |
+| 日本語 (`ja`) | 1129/1323 | 85% |
+| Русский (`ru`) | 1129/1323 | 85% |
+| Українська (`uk`) | 1129/1323 | 85% |
+| Polski (`pl`) | 1129/1323 | 85% |
+| Čeština (`cs`) | 1129/1323 | 85% |
+| Português (Brasil) (`pt-BR`) | 1129/1323 | 85% |
+| 简体中文 (`zh-CN`) | 1129/1323 | 85% |
+| Türkçe (`tr`) | 1129/1323 | 85% |
+| Shqip (`sq`) | 1129/1323 | 85% |
 
 <!-- i18n:end -->
 
