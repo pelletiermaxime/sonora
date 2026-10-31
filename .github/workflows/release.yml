@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      recover_1_0_4:
+        description: Reuse the completed v1.0.4 builds and repair AppImage packaging
+        type: boolean
+        default: false
   # nightly.yml builds main through here. The input is the nightly's version number, and its
   # presence publishes the build as the nightly prerelease instead of a tagged release.
   workflow_call:
@@ -25,6 +30,7 @@ env:
 
 jobs:
   build:
+    if: ${{ !inputs.recover_1_0_4 }}
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -411,6 +417,10 @@ jobs:
             --desktop-file desktop/sonora.desktop \
             --icon-file assets/linux/sonora.svg
 
+          # A raster root icon avoids depending on the runner's SVG loader support.
+          cp assets/linux/icons/hicolor/256x256/apps/sonora.png AppDir/sonora.png
+          ln -sfn sonora.png AppDir/.DirIcon
+
           # The Vulkan loader has to be the host's: it is what finds the host's ICD, and a loader
           # this old paired with a current driver is how an AppImage stops starting.
           rm -f AppDir/usr/lib/libvulkan.so.1*
@@ -481,7 +491,7 @@ jobs:
   # A nightly skips the Flatpak, since the one repository it publishes to is the stable channel.
   flatpak:
     name: "Flatpak (${{ matrix.variant.arch }})"
-    if: ${{ !inputs.nightly }}
+    if: ${{ !inputs.nightly && !inputs.recover_1_0_4 }}
     strategy:
       fail-fast: false
       matrix:
@@ -876,3 +886,10 @@ jobs:
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -q -m "upgpkg: sonora-bin ${TAG#v}-1"
           git push origin HEAD:master
+
+  recover-1-0-4:
+    if: github.event_name == 'workflow_dispatch' && inputs.recover_1_0_4 && github.repository == 'pelletiermaxime/sonora'
+    uses: ./.github/workflows/recover-1.0.4.yml
+    permissions:
+      actions: read
+      contents: write

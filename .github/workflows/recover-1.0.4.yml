@@ -1,0 +1,244 @@
+name: recover v1.0.4 packaging
+
+on:
+  workflow_call:
+
+# Recover only the existing v1.0.4 tag. Application binaries come from the completed builds,
+# and the checkout stays at the exact commit that passed CI rather than the repair branch.
+env:
+  SOURCE_COMMIT: 2703c7acf3d983ab5c89bf4901b78ea08e70639d
+  SOURCE_RUN: "41156464806"
+  VERSION: v1.0.4
+
+jobs:
+  appimage:
+    name: "repair AppImage (${{ matrix.variant.arch }})"
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.variant.runner }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: 1
+      ARCH: ${{ matrix.variant.arch }}
+      TARGET: ${{ matrix.variant.target }}
+      UPDATE: gh-releases-zsync|pelletiermaxime|sonora|latest|sonora-*-${{ matrix.variant.arch }}.AppImage.zsync
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: 2703c7acf3d983ab5c89bf4901b78ea08e70639d
+
+      - name: verify the original source and build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = pelletiermaxime/sonora
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git ls-remote origin 'refs/tags/v1.0.4^{}' | cut -f1)" = "$SOURCE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > original-run.json
+          jq -e --arg sha "$SOURCE_COMMIT" \
+            '.head_sha == $sha and .head_branch == "v1.0.4" and .status == "completed"' original-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > original-jobs.json
+          jq -e --arg target "$TARGET" \
+            '.jobs | any(.name == $target and .conclusion == "success")' original-jobs.json
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.variant.target }}
+          path: staged
+          run-id: 41156464806
+          github-token: ${{ github.token }}
+
+      - name: system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            patchelf file desktop-file-utils \
+            libasound2 libfontconfig1 libfreetype6 libsqlite3-0 \
+            libx11-6 libxcb1 libxcursor1 libxi6 \
+            libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+            libvulkan1 libdbus-1-3
+
+      - name: fetch the AppImage tools
+        run: |
+          set -euo pipefail
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -fsSL -o linuxdeploy "$base/linuxdeploy-$ARCH.AppImage"
+          base=https://github.com/AppImage/appimagetool/releases/download/continuous
+          curl -fsSL -o appimagetool "$base/appimagetool-$ARCH.AppImage"
+          chmod +x linuxdeploy appimagetool
+
+      - name: assemble the AppDir with a raster root icon
+        run: |
+          set -euo pipefail
+          mkdir -p AppDir/usr/bin
+          cp "staged/sonora-$VERSION-$TARGET" AppDir/usr/bin/sonora
+          chmod +x AppDir/usr/bin/sonora
+          mkdir -p AppDir/usr/share/icons
+          cp -R assets/linux/icons/hicolor AppDir/usr/share/icons/
+          mkdir -p desktop
+          cp assets/linux/sonora.desktop desktop/sonora.desktop
+          {
+            echo "X-AppImage-Name=Sonora"
+            echo "X-AppImage-Arch=$ARCH"
+            echo "X-AppImage-Homepage=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+            echo "X-AppImage-Version=1.0.4"
+            echo "X-AppImage-UpdateURL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          } >> desktop/sonora.desktop
+          desktop-file-validate desktop/sonora.desktop
+          ./linuxdeploy \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/sonora \
+            --desktop-file desktop/sonora.desktop \
+            --icon-file assets/linux/sonora.svg
+          cp assets/linux/icons/hicolor/256x256/apps/sonora.png AppDir/sonora.png
+          ln -sfn sonora.png AppDir/.DirIcon
+          rm -f AppDir/usr/lib/libvulkan.so.1*
+          mkdir -p AppDir/usr/share/doc/sonora/icons
+          cp COPYING AppDir/usr/share/doc/sonora/LICENSE
+          cp THIRD-PARTY.md AppDir/usr/share/doc/sonora/
+          cp assets/fonts/LICENSE.txt AppDir/usr/share/doc/sonora/LICENSE.Inter
+          cp assets/icons/LICENSE AppDir/usr/share/doc/sonora/icons/LICENSE
+          for licence in assets/icons/*/LICENSE; do
+            pack="$(basename "$(dirname "$licence")")"
+            cp "$licence" "AppDir/usr/share/doc/sonora/icons/LICENSE.$pack"
+          done
+
+      - name: build and inspect the AppImage
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          image="sonora-$VERSION-$ARCH.AppImage"
+          env -u VERSION ./appimagetool --updateinformation "$UPDATE" AppDir "dist/$image"
+          if [ -f "$image.zsync" ]; then mv "$image.zsync" dist/; fi
+          cd dist
+          "./$image" --appimage-extract > /dev/null
+          test -x squashfs-root/usr/bin/sonora
+          test -f squashfs-root/sonora.png
+          test -f squashfs-root/.DirIcon
+          test -f squashfs-root/sonora.desktop
+          grep -qx "X-AppImage-Arch=$ARCH" squashfs-root/sonora.desktop
+          grep -qx 'X-AppImage-Version=1.0.4' squashfs-root/sonora.desktop
+          test -f "$image.zsync"
+          test "$(env -u APPIMAGE_EXTRACT_AND_RUN "./$image" --appimage-updateinformation)" = "$UPDATE"
+          test -f squashfs-root/usr/share/doc/sonora/THIRD-PARTY.md
+          test ! -e squashfs-root/usr/lib/libvulkan.so.1
+          ldd squashfs-root/usr/bin/sonora
+          rm -rf squashfs-root
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-appimage-${{ matrix.variant.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: appimage
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: 2703c7acf3d983ab5c89bf4901b78ea08e70639d
+
+      - name: verify the original tag and all completed packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = pelletiermaxime/sonora
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git ls-remote origin 'refs/tags/v1.0.4^{}' | cut -f1)" = "$SOURCE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/41154136948" \
+            --jq '{head_sha, conclusion}' > ci.json
+          jq -e --arg sha "$SOURCE_COMMIT" \
+            '.head_sha == $sha and .conclusion == "success"' ci.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > jobs.json
+          jq -e '
+            [.jobs[] | select(.conclusion == "success") | .name] as $passed |
+            ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+             "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
+             "x86_64-apple-darwin", "aarch64-apple-darwin",
+             "macos app bundle", "Flatpak (x86_64)", "Flatpak (aarch64)"] |
+            all(. as $name | $passed | index($name) != null)
+          ' jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          jq -e 'all(.[]; .tag_name != "v1.0.4")' releases.json
+
+      - name: reuse the successful binaries, installers and DMG
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+          run-id: 41156464806
+          github-token: ${{ github.token }}
+
+      - name: reuse the successful unsigned Flatpaks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: flatpak-*
+          path: dist
+          merge-multiple: true
+          run-id: 41156464806
+          github-token: ${{ github.token }}
+
+      - name: collect the repaired AppImages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-appimage-*
+          path: dist
+          merge-multiple: true
+
+      - name: stage licenses and verify the complete asset inventory
+        run: |
+          set -euo pipefail
+          ./scripts/licenses-tarball.sh "dist/sonora-$VERSION-licenses.tar.gz"
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 14
+          for arch in x86_64 aarch64; do
+            for suffix in -unknown-linux-gnu -pc-windows-msvc.exe .AppImage .AppImage.zsync .flatpak; do
+              test -s "dist/sonora-$VERSION-$arch$suffix"
+            done
+          done
+          test -s dist/Sonora-Setup.exe
+          test -s dist/Sonora-Setup-arm64.exe
+          test -s "dist/sonora-$VERSION-macos.dmg"
+          test -s "dist/sonora-$VERSION-licenses.tar.gz"
+          cd dist
+          shasum -a 256 * > SHA256SUMS
+
+      - name: extract the existing v1.0.4 changelog notes
+        run: |
+          set -euo pipefail
+          awk -v heading='## [1.0.4]' '
+            /^## / {
+              if (found) exit
+              if ($0 == heading || index($0, heading " - ") == 1) { found = 1; next }
+            }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+          printf '\n[Code signing policy](https://github.com/%s#code-signing-policy)\n' "$GITHUB_REPOSITORY" >> notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.4
+          target_commitish: 2703c7acf3d983ab5c89bf4901b78ea08e70639d
+          files: dist/*
+          body_path: notes.md
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
