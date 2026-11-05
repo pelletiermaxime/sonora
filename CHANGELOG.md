@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-11-05
+
 ### Fixed
 
 - Discover can update Metal Archives releases when an entry lists only a release month or year, keeping its exact release day unconfirmed.
@@ -2075,7 +2077,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Initial release: a native Spotify client with playback, an interactive queue, the saved library,
 search, album, playlist, artist and song pages, context menus and adaptive theming.
 
-[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.4...main
+[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.5...main
+[1.0.5]: https://github.com/pelletiermaxime/sonora/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/pelletiermaxime/sonora/compare/v1.0.3...v1.0.4
 [1.0.2]: https://github.com/pelletiermaxime/sonora/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/pelletiermaxime/sonora/compare/v1.0.0...v1.0.1
