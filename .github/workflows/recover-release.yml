@@ -74,7 +74,7 @@ jobs:
           lipo -create -output Sonora.app/Contents/MacOS/sonora \
             darwin/sonora-aarch64-apple-darwin darwin/sonora-x86_64-apple-darwin
           chmod +x Sonora.app/Contents/MacOS/sonora
-          lipo -verify_arch arm64 x86_64 Sonora.app/Contents/MacOS/sonora
+          lipo Sonora.app/Contents/MacOS/sonora -verify_arch arm64 x86_64
           cp assets/macos/sonora.icns Sonora.app/Contents/Resources/
           cp COPYING Sonora.app/Contents/Resources/LICENSE
           cp THIRD-PARTY.md Sonora.app/Contents/Resources/
