@@ -411,6 +411,10 @@ jobs:
             --desktop-file desktop/sonora.desktop \
             --icon-file assets/linux/sonora.svg
 
+          # A raster root icon avoids depending on the runner's SVG loader support.
+          cp assets/linux/icons/hicolor/256x256/apps/sonora.png AppDir/sonora.png
+          ln -sfn sonora.png AppDir/.DirIcon
+
           # The Vulkan loader has to be the host's: it is what finds the host's ICD, and a loader
           # this old paired with a current driver is how an AppImage stops starting.
           rm -f AppDir/usr/lib/libvulkan.so.1*
@@ -454,6 +458,8 @@ jobs:
           image="sonora-$VERSION-$ARCH.AppImage"
           "./$image" --appimage-extract > /dev/null
           test -x squashfs-root/usr/bin/sonora
+          test -f squashfs-root/sonora.png
+          test -f squashfs-root/.DirIcon
           test -f squashfs-root/sonora.desktop
           grep -qx "X-AppImage-Arch=$ARCH" squashfs-root/sonora.desktop
           if [ -n "$NUMBER" ]; then
