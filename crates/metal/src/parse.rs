@@ -237,13 +237,13 @@ pub(crate) fn browser_date_retry(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// Accepts ISO dates and the English dates used by Metal Archives, preserving imprecise years.
+/// Accepts ISO and English release dates while preserving month-only and year-only precision.
 fn date(value: &str) -> String {
     if value.parse::<jiff::civil::Date>().is_ok() {
         return value.into();
     }
     let words: Vec<_> = value.split_whitespace().collect();
-    if words.len() == 3 {
+    if words.len() == 2 || words.len() == 3 {
         let months = [
             "january",
             "february",
@@ -259,6 +259,14 @@ fn date(value: &str) -> String {
             "december",
         ];
         if let Some(month) = months.iter().position(|m| *m == words[0].to_lowercase()) {
+            if words.len() == 2 {
+                return words[1]
+                    .parse::<i16>()
+                    .ok()
+                    .and_then(|year| jiff::civil::Date::new(year, month as i8 + 1, 1).ok())
+                    .map(|date| date.strftime("%Y-%m").to_string())
+                    .unwrap_or_else(|| value.into());
+            }
             let day = words[1]
                 .trim_end_matches(|c: char| !c.is_ascii_digit())
                 .parse::<u8>();

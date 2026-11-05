@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover can update Metal Archives releases when an entry lists only a release month or year, keeping its exact release day unconfirmed.
+
 ## [1.0.4] - 2026-10-30
 
 ### Changed

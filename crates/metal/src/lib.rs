@@ -111,33 +111,11 @@ pub enum ReleaseAvailability {
 impl Release {
     /// Compares full dates or date ranges without treating the current year as released.
     pub fn availability(&self, today: jiff::civil::Date) -> ReleaseAvailability {
-        if let Ok(date) = self.date.parse::<jiff::civil::Date>() {
-            return match date > today {
-                true => ReleaseAvailability::Upcoming,
-                false => ReleaseAvailability::Released,
-            };
-        }
-        let bounds = self
-            .date
-            .split_once('-')
-            .and_then(|(year, month)| {
-                let first =
-                    jiff::civil::Date::new(year.parse().ok()?, month.parse().ok()?, 1).ok()?;
-                let last =
-                    jiff::civil::Date::new(first.year(), first.month(), first.days_in_month())
-                        .ok()?;
-                Some((first, last))
-            })
-            .or_else(|| {
-                let year = self.date.parse::<i16>().ok()?;
-                Some((
-                    jiff::civil::Date::new(year, 1, 1).ok()?,
-                    jiff::civil::Date::new(year, 12, 31).ok()?,
-                ))
-            });
-        match bounds {
+        match date_bounds(&self.date) {
             Some((first, _)) if first > today => ReleaseAvailability::Upcoming,
-            Some((_, last)) if last < today => ReleaseAvailability::Released,
+            Some((first, last)) if last < today || first == last && last == today => {
+                ReleaseAvailability::Released
+            }
             _ => ReleaseAvailability::Unconfirmed,
         }
     }
@@ -696,11 +674,9 @@ impl Client {
             .map(parse::upcoming)
             .collect::<Result<Vec<_>>>()?;
         for release in &releases {
-            let date: jiff::civil::Date = release
-                .date
-                .parse()
-                .context("browser release has no exact date")?;
-            if date < start || date > end {
+            let (first, last) =
+                date_bounds(&release.date).context("browser release has no valid date")?;
+            if last < start || first > end {
                 return Err(BrowserError::Incomplete.into());
             }
         }
@@ -1370,6 +1346,24 @@ impl std::fmt::Display for BrowserError {
 }
 
 impl std::error::Error for BrowserError {}
+
+/// Expands an exact date, month, or year into its possible inclusive release-date range.
+fn date_bounds(value: &str) -> Option<(jiff::civil::Date, jiff::civil::Date)> {
+    if let Ok(date) = value.parse::<jiff::civil::Date>() {
+        return Some((date, date));
+    }
+    if let Some((year, month)) = value.split_once('-') {
+        let first = jiff::civil::Date::new(year.parse().ok()?, month.parse().ok()?, 1).ok()?;
+        let last =
+            jiff::civil::Date::new(first.year(), first.month(), first.days_in_month()).ok()?;
+        return Some((first, last));
+    }
+    let year = value.parse::<i16>().ok()?;
+    Some((
+        jiff::civil::Date::new(year, 1, 1).ok()?,
+        jiff::civil::Date::new(year, 12, 31).ok()?,
+    ))
+}
 
 fn challenge(text: &str) -> bool {
     let lower = text.to_lowercase();
