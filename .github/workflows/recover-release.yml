@@ -27,6 +27,85 @@ env:
 
 # Repackage the original binaries without moving the release tag or rebuilding the application.
 jobs:
+  bundle:
+    if: github.repository == 'pelletiermaxime/sonora'
+    name: repair macos app bundle
+    runs-on: macos-15-intel
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: verify the original macOS builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          source_commit="$(git rev-parse HEAD)"
+          test "$(git ls-remote origin "refs/tags/$VERSION^{}" | cut -f1)" = "$source_commit"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > original-run.json
+          jq -e --arg sha "$source_commit" --arg tag "$VERSION" \
+            '.head_sha == $sha and .head_branch == $tag and .path == ".github/workflows/release.yml" and .status == "completed"' original-run.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" \
+            --slurp > original-jobs.json
+          jq -e '
+            [.[].jobs[] | select(.conclusion == "success") | .name] as $passed |
+            ["x86_64-apple-darwin", "aarch64-apple-darwin"] |
+            all(. as $name | $passed | index($name) != null)
+          ' original-jobs.json
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: darwin-*
+          path: darwin
+          merge-multiple: true
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+
+      - name: assemble and sign the universal bundle
+        run: |
+          set -euo pipefail
+          mkdir -p Sonora.app/Contents/MacOS Sonora.app/Contents/Resources
+          lipo -create -output Sonora.app/Contents/MacOS/sonora \
+            darwin/sonora-aarch64-apple-darwin darwin/sonora-x86_64-apple-darwin
+          chmod +x Sonora.app/Contents/MacOS/sonora
+          lipo -verify_arch arm64 x86_64 Sonora.app/Contents/MacOS/sonora
+          cp assets/macos/sonora.icns Sonora.app/Contents/Resources/
+          cp COPYING Sonora.app/Contents/Resources/LICENSE
+          cp THIRD-PARTY.md Sonora.app/Contents/Resources/
+          cp assets/fonts/LICENSE.txt Sonora.app/Contents/Resources/LICENSE.Inter
+          mkdir -p Sonora.app/Contents/Resources/icons
+          cp assets/icons/LICENSE Sonora.app/Contents/Resources/icons/LICENSE
+          for licence in assets/icons/*/LICENSE; do
+            pack="$(basename "$(dirname "$licence")")"
+            cp "$licence" "Sonora.app/Contents/Resources/icons/LICENSE.$pack"
+          done
+          sed "s/@VERSION@/${VERSION#v}/g" assets/macos/Info.plist > Sonora.app/Contents/Info.plist
+          plutil -lint Sonora.app/Contents/Info.plist
+          codesign --force --sign - Sonora.app
+          codesign --verify --strict --verbose=2 Sonora.app
+
+      - name: create the disk image
+        run: |
+          set -euo pipefail
+          mkdir -p dist staging
+          cp -R Sonora.app staging/
+          ln -s /Applications staging/Applications
+          megabytes=$(du -ms staging | cut -f1)
+          hdiutil create -volname Sonora -srcfolder staging -size "$((megabytes + 128))m" \
+            -ov -format UDZO "dist/sonora-$VERSION-macos.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/*
+          if-no-files-found: error
+
   appimage:
     if: github.repository == 'pelletiermaxime/sonora'
     name: repair AppImage (${{ matrix.variant.arch }})
@@ -162,7 +241,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: appimage
+    needs: [appimage, bundle]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -183,7 +262,16 @@ jobs:
           test "$(git ls-remote origin "refs/tags/$VERSION^{}" | cut -f1)" = "$source_commit"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" > ci.json
           jq -e --arg sha "$source_commit" \
-            '.head_sha == $sha and .path == ".github/workflows/ci.yml" and .conclusion == "success"' ci.json
+            '.head_sha == $sha and .path == ".github/workflows/ci.yml"' ci.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN/jobs?per_page=100" \
+            --slurp > ci-jobs.json
+          # The release builds below already prove every native target. Require the source
+          # checks too, without depending on a second copy of each native build getting a runner.
+          jq -e '
+            [.[].jobs[]] |
+            any(.name == "fmt, clippy and tests" and .conclusion == "success") and
+            all(.conclusion != "failure" and .conclusion != "timed_out")
+          ' ci-jobs.json
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" \
             --slurp > jobs.json
           jq -e '
@@ -191,13 +279,13 @@ jobs:
             ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
              "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
              "x86_64-apple-darwin", "aarch64-apple-darwin",
-             "macos app bundle", "Flatpak (x86_64)", "Flatpak (aarch64)"] |
+             "Flatpak (x86_64)", "Flatpak (aarch64)"] |
             all(. as $name | $passed | index($name) != null)
           ' jobs.json
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --slurp > releases.json
           jq -e --arg tag "$VERSION" 'all(.[][]; .tag_name != $tag)' releases.json
 
-      - name: reuse the successful binaries, installers and DMG
+      - name: reuse the successful binaries and installers
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -221,6 +309,12 @@ jobs:
           pattern: release-appimage-*
           path: dist
           merge-multiple: true
+
+      - name: collect the repaired macOS disk image
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: dist
 
       - name: stage licenses and verify the complete asset inventory
         run: |
