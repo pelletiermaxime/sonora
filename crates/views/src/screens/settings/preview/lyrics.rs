@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, Pixels, Window, div};
-use music::{LyricsLine, LyricsWord, RomanizedText, Voice, WritingSystem};
+use music::{LyricsLine, LyricsWord, RomanizedText, WritingSystem};
 use state::RomanizationScripts;
 use ui::{ActiveTheme as _, Theme};
 
@@ -64,8 +64,16 @@ pub(in crate::screens::settings) fn preview(
     window: &mut Window,
     cx: &mut Context<SettingsView>,
 ) -> Option<AnyElement> {
-    let theme = *cx.theme();
     let height = (Layout::of(window, cx).width * ASPECT).round();
+    let field = view.settings.read(cx).ambient().then(|| {
+        let cover = view.previews.playing_or_picked(cx).large_cover(cx);
+        view.previews.ambient(cover, cx)
+    });
+    // over the field the lines wear what fullscreen would, not the theme around them
+    let theme = match &field {
+        Some(field) => field.read(cx).theme(cx),
+        None => *cx.theme(),
+    };
 
     let settings = view.settings.read(cx);
     let look = Look {
@@ -76,18 +84,15 @@ pub(in crate::screens::settings) fn preview(
             .then(|| settings.romanization_scripts()),
     };
     let sizes = verse_sizes(false, settings.fullscreen_lyrics_scale(), &theme);
-    let field = settings.ambient().then(|| {
-        let cover = view.previews.playing_or_picked(cx).large_cover(cx);
-        view.previews.ambient(cover, cx)
-    });
-
+    let on = settings.lyrics_enabled();
     let sheet = div()
         .relative()
         .w_full()
         .h(height)
         .bg(theme.background)
         .children(field)
-        .child(lines(look, sizes, height, theme));
+        .child(lines(look, sizes, height, theme))
+        .when(!on, |sheet| sheet.opacity(super::DIMMED));
 
     Some(super::framed(sheet, cx).into_any_element())
 }
@@ -172,8 +177,7 @@ fn sample() -> Vec<LyricsLine> {
                 words: Some(timed(&text, start)),
                 text,
                 romanized,
-                secondary: Vec::new(),
-                voice: Voice::Lead,
+                ..Default::default()
             }
         })
         .collect()

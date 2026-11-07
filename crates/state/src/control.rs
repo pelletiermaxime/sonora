@@ -1,29 +1,38 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cli::commands::{
     self, Item, Kind, Level, PlaybackCommand, ProviderCommand, QueueCommand, Request, SearchQuery,
-    Switch,
+    SessionCommand, Switch, Time, Watch,
 };
-use cli::wire::{self, Current, Failure, Reply, State, Value};
+use cli::wire::{self, Current, Failure, Reply, SessionInfo, State, Value};
 use futures::future;
 use gpui::{App, Context, Entity, Subscription, Task};
 use music::link::Linked;
-use music::{Album, MediaKind, MusicApi, MusicProvider, Playlist, Track};
-use tokio::sync::oneshot;
+use music::{Album, MediaKind, MusicApi, MusicProvider, Playlist, SavedArtist, Track};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::search::{self, Catalog};
 use crate::{
     Hit, Io, Library, Origin, Playback, PlaybackState, QueuePlacement, Repeat, Session,
-    SessionState, Shelf, Sonora, join, noted,
+    SessionState, Shelf, Sonora, Whence, join, noted,
 };
 
-/// What the three searches of a query answered: songs, albums and playlists.
+/// What `sonora current` calls the provider of a local file, the slug `sonora providers` gives it.
+const LOCAL: &str = "local";
+
+/// How often a watch looks again on its own, for the position it reports and for a change made
+/// somewhere that does not go through `Playback`, such as the volume of a steered device.
+const WATCH_TICK: Duration = Duration::from_secs(1);
+
+/// What the four searches of a query answered: songs, albums, playlists and artists.
 type Found = (
     anyhow::Result<Vec<Track>>,
     anyhow::Result<Vec<Album>>,
     anyhow::Result<Vec<Playlist>>,
+    anyhow::Result<Vec<SavedArtist>>,
 );
 
 /// Carries out what the command line asks of the running Sonora. Playback goes through
@@ -38,7 +47,21 @@ pub struct Control {
     issued: u64,
     /// A provider switch waiting for the session to settle before it answers.
     switching: Option<Switching>,
+    /// Command lines following what plays, as `sonora watch`.
+    watchers: Vec<Watcher>,
+    /// What keeps the watchers told, held only while there are any.
+    watching: Option<(Subscription, Task<()>)>,
     _session: Subscription,
+}
+
+/// A `sonora watch` and what it was last told.
+struct Watcher {
+    sink: mpsc::UnboundedSender<Reply>,
+    /// Whether a new position alone is worth a line.
+    position: bool,
+    /// The state last sent, with the position left out unless `position`; `None` before the
+    /// first line.
+    told: Option<Option<Current>>,
 }
 
 /// A switch to the provider `slug`, answered once the session lands somewhere.
@@ -90,7 +113,63 @@ impl Control {
             pending: HashMap::new(),
             issued: 0,
             switching: None,
+            watchers: Vec::new(),
+            watching: None,
             _session,
+        }
+    }
+
+    /// Follows what plays for a `sonora watch`: what plays now at once, then again on every
+    /// change, until the command line hangs up and `sink` closes.
+    pub fn watch(
+        &mut self,
+        watch: Watch,
+        sink: mpsc::UnboundedSender<Reply>,
+        cx: &mut Context<Self>,
+    ) {
+        self.watchers.push(Watcher {
+            sink,
+            position: watch.position,
+            told: None,
+        });
+        if self.watching.is_none() {
+            let observed = cx.observe(&self.playback, |this, _, cx| this.tell(cx));
+            let ticking = cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(WATCH_TICK).await;
+                    if this.update(cx, |this, cx| this.tell(cx)).is_err() {
+                        break;
+                    }
+                }
+            });
+            self.watching = Some((observed, ticking));
+        }
+        self.tell(cx);
+    }
+
+    /// Sends what plays to every watcher it changed for since its last line, and lets go of the
+    /// ones that hung up. With none left, nothing follows playback any more.
+    fn tell(&mut self, cx: &mut Context<Self>) {
+        let now = current(self.playback.read(cx), cx);
+        self.watchers.retain_mut(|watcher| {
+            let seen = match watcher.position {
+                true => now.clone(),
+                false => now.clone().map(|current| Current {
+                    position: 0,
+                    ..current
+                }),
+            };
+            if watcher.told.as_ref() == Some(&seen) {
+                return !watcher.sink.is_closed();
+            }
+            watcher.told = Some(seen);
+            watcher
+                .sink
+                .send(Reply::Value(Value::Current(now.clone())))
+                .is_ok()
+        });
+        if self.watchers.is_empty() {
+            self.watching = None;
         }
     }
 
@@ -109,6 +188,9 @@ impl Control {
             Request::Queue(command) => return self.queue(command, reply, cx),
             Request::Provider(command) => return self.provider(command, reply, cx),
             Request::Search(query) => return self.search(query, reply, cx),
+            Request::Session(command) => session(command, cx),
+            // a watch is answered as a stream, by `watch`, and never reaches here
+            Request::Watch(_) => Reply::Failed(Failure::Malformed),
         };
         reply.send(answer).ok();
     }
@@ -242,10 +324,11 @@ impl Control {
             let asked = query.text.clone();
             Io::global(cx).spawn(async move {
                 anyhow::Ok(
-                    future::join3(
+                    future::join4(
                         client.search(&asked),
                         client.search_albums(&asked),
                         client.search_playlists(&asked),
+                        client.search_artists(&asked),
                     )
                     .await,
                 )
@@ -277,11 +360,11 @@ impl Control {
     fn hits(
         &self,
         query: &SearchQuery,
-        (tracks, albums, playlists): Found,
+        (tracks, albums, playlists, artists): Found,
         client: &dyn MusicApi,
         cx: &mut App,
     ) -> Result<Vec<wire::Hit>, Failure> {
-        if let (Err(error), Err(_), Err(_)) = (&tracks, &albums, &playlists) {
+        if let (Err(error), Err(_), Err(_), Err(_)) = (&tracks, &albums, &playlists, &artists) {
             log::warn!("control: cannot search: {error:#}");
             noted(error, cx);
             return Err(Failure::Unfetched(query.text.clone()));
@@ -290,6 +373,7 @@ impl Control {
             tracks: tracks.unwrap_or_default(),
             albums: albums.unwrap_or_default(),
             playlists: playlists.unwrap_or_default(),
+            artists: artists.unwrap_or_default(),
         };
         let library = self.library.read(cx).state(Shelf::Streaming);
         let ranked = search::rank(
@@ -440,6 +524,41 @@ impl Control {
     }
 }
 
+/// Starts, joins or leaves a Sonora Session, or says which one Sonora is in. A start or join
+/// answers before the server does, so `sonora session` tells whether it went through.
+fn session(command: SessionCommand, cx: &mut App) -> Reply {
+    let listening = Sonora::global(cx).listening.clone();
+    match command {
+        SessionCommand::Status => {
+            let listening = listening.read(cx);
+            let info = listening.room().map(|room| SessionInfo {
+                code: room.code.clone(),
+                provider: room.provider.clone(),
+                hosting: room.hosting(),
+                members: room
+                    .host()
+                    .into_iter()
+                    .chain(room.members.iter().filter(|member| !member.host))
+                    .map(|member| member.name.clone())
+                    .collect(),
+            });
+            return Reply::Value(Value::Session(info));
+        }
+        SessionCommand::Start if !listening.read(cx).available(cx) => {
+            return Reply::Failed(Failure::SignedOut);
+        }
+        SessionCommand::Start => listening.update(cx, |listening, cx| listening.start(cx)),
+        SessionCommand::Join(Some(code)) => {
+            listening.update(cx, |listening, cx| listening.join(&code, cx))
+        }
+        SessionCommand::Join(None) => {
+            listening.update(cx, |listening, cx| listening.show_join(true, cx))
+        }
+        SessionCommand::Leave => listening.update(cx, |listening, cx| listening.leave(cx)),
+    }
+    Reply::Done
+}
+
 fn play(playback: &mut Playback, command: PlaybackCommand, cx: &mut Context<Playback>) -> Reply {
     match command {
         PlaybackCommand::Play => playback.resume(cx),
@@ -448,6 +567,10 @@ fn play(playback: &mut Playback, command: PlaybackCommand, cx: &mut Context<Play
         PlaybackCommand::Next => playback.next(cx),
         PlaybackCommand::Previous => playback.previous(cx),
         PlaybackCommand::Seek(percent) => playback.seek_fraction(f32::from(percent) / 100., cx),
+        PlaybackCommand::SeekTime(time) => {
+            let target = moment(playback, time, cx);
+            playback.seek(target, cx);
+        }
         PlaybackCommand::CurrentTrack => {
             return Reply::Value(Value::Current(current(playback, cx)));
         }
@@ -540,6 +663,31 @@ fn settled_on(session: &Session, slug: &str) -> bool {
         )
 }
 
+/// Where a seek in time lands: the time asked for, or a step from where the track plays now,
+/// held inside the track on the steered device when there is one.
+fn moment(playback: &Playback, time: Time, cx: &App) -> Duration {
+    let (now, length) = match playback.steered(cx) {
+        Some(steered) => (steered.state.live_position(), steered.state.duration),
+        None => (
+            playback.live_position(),
+            playback
+                .track()
+                .map_or(Duration::ZERO, |track| track.duration),
+        ),
+    };
+    let target = match time {
+        Time::To(at) => Duration::from_secs(at),
+        Time::By(step) => match step < 0 {
+            true => now.saturating_sub(Duration::from_secs(step.unsigned_abs())),
+            false => now.saturating_add(Duration::from_secs(step.unsigned_abs())),
+        },
+    };
+    match length.is_zero() {
+        true => target,
+        false => target.min(length),
+    }
+}
+
 /// What plays now, on the steered device when there is one, or `None` when nothing is loaded.
 fn current(playback: &Playback, cx: &App) -> Option<Current> {
     let track = playback.shown_track(cx)?;
@@ -561,6 +709,12 @@ fn current(playback: &Playback, cx: &App) -> Option<Current> {
             (state, playback.live_position())
         }
     };
+    let sonora = Sonora::global(cx);
+    let id = track.id.as_deref();
+    let provider = match id.is_some_and(|id| Shelf::of(id).local()) {
+        true => Some(LOCAL.to_owned()),
+        false => sonora.session.read(cx).provider_slug().map(str::to_owned),
+    };
     Some(Current {
         state,
         track: wire_track(&track),
@@ -568,7 +722,26 @@ fn current(playback: &Playback, cx: &App) -> Option<Current> {
         volume: percent(playback.shown_volume(cx)),
         shuffle: playback.shown_shuffle(cx),
         repeat: wire_repeat(playback.shown_repeat(cx)),
+        provider,
+        liked: id.is_some_and(|id| sonora.library.read(cx).saved(id)),
+        origin: playback.origin(cx).map(wire_origin),
     })
+}
+
+fn wire_origin(origin: &Origin) -> wire::Origin {
+    let kind = match origin.whence {
+        Whence::Album => wire::OriginKind::Album,
+        Whence::Playlist => wire::OriginKind::Playlist,
+        Whence::Artist => wire::OriginKind::Artist,
+        Whence::Radio => wire::OriginKind::Radio,
+        Whence::Saved => wire::OriginKind::Liked,
+        Whence::Local => wire::OriginKind::Local,
+    };
+    wire::Origin {
+        kind,
+        id: origin.id.clone(),
+        name: origin.name.as_ref().map(ToString::to_string),
+    }
 }
 
 fn wire_track(track: &Track) -> wire::Track {
@@ -649,10 +822,20 @@ async fn fetch(
             tracks,
             origin: Some(Origin::playlist(id)),
         }),
-        Linked::Artist(id) => client.artist(&id).await.map(|artist| Batch {
-            tracks: artist.top_tracks,
-            origin: Some(Origin::artist(id).named(artist.name)),
-        }),
+        Linked::Artist(id) => {
+            let (profile, tracks) =
+                tokio::join!(client.artist_profile(&id), client.artist_tracks(&id));
+            tracks.map(|tracks| {
+                let origin = Origin::artist(id.clone());
+                Batch {
+                    tracks,
+                    origin: Some(match profile {
+                        Ok(profile) => origin.named(profile.name),
+                        Err(_) => origin,
+                    }),
+                }
+            })
+        }
         Linked::User(_) | Linked::Jam(_) | Linked::Short => {
             return Err(Missed {
                 failure: Failure::Unqueueable(link),

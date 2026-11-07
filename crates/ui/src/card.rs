@@ -67,7 +67,10 @@ pub struct Card {
     underline: bool,
     playing: bool,
     chosen: bool,
+    tucked: bool,
     action: Option<AnyElement>,
+    /// Whether the hover action takes no room until the card is hovered.
+    collapsed: bool,
     drag_start: Option<DragStart>,
     menu: Option<Summon>,
 }
@@ -104,7 +107,9 @@ impl Card {
             underline: false,
             playing: false,
             chosen: false,
+            tucked: false,
             action: None,
+            collapsed: false,
             drag_start: None,
             menu: None,
         }
@@ -160,6 +165,14 @@ impl Card {
 
     pub fn action(mut self, action: impl IntoElement) -> Self {
         self.action = Some(action.into_any_element());
+        self
+    }
+
+    /// Shows an action on hover like `action`, but it takes no room until then, so the trailing
+    /// content only moves aside while the card is hovered.
+    pub fn collapsed_action(mut self, action: impl IntoElement) -> Self {
+        self.action = Some(action.into_any_element());
+        self.collapsed = true;
         self
     }
 
@@ -256,6 +269,13 @@ impl Card {
         self
     }
 
+    /// Rounds the card to sit inside a padded panel such as a dropdown, so its corners follow
+    /// the panel's instead of bulging past them.
+    pub fn tucked(mut self) -> Self {
+        self.tucked = true;
+        self
+    }
+
     pub fn loading(mut self) -> Self {
         self.loading = true;
         self.fill = false;
@@ -331,7 +351,9 @@ impl RenderOnce for Card {
             underline,
             playing,
             chosen,
+            tucked,
             action,
+            collapsed,
             drag_start,
             menu,
         } = self;
@@ -440,7 +462,7 @@ impl RenderOnce for Card {
                                     .bg(theme.overlay)
                                     .role(gpui::accesskit::Role::Button)
                                     .aria_label(i18n::lookup(hint, None))
-                                    .tip(hint, Perch::Pointer)
+                                    .tip(hint, Perch::Below)
                                     .child(
                                         svg()
                                             .path(icons::path(glyph))
@@ -501,7 +523,7 @@ impl RenderOnce for Card {
             })
             .when(underline, |this| this.hover(|style| style.underline()))
             .when(hint && !title.is_empty(), |this| {
-                this.tip_label(title.clone(), Perch::Pointer)
+                this.tip_label(title.clone(), Perch::Below)
             })
             .text_color(tint.unwrap_or(theme.foreground))
             .when_some(size, |this, size| this.text_size(theme.text(size)))
@@ -545,7 +567,10 @@ impl RenderOnce for Card {
                 |this| this.flex_col().gap_2().w(art),
                 |this| this.items_center().gap_3().px(inset),
             )
-            .rounded(theme.radius)
+            .rounded(match tucked {
+                true => crate::metrics::tucked(theme.radius, window),
+                false => theme.radius,
+            })
             .when(listed, |this| {
                 this.flex_none().h(height).py(inset).w_full().min_w_0()
             })
@@ -618,8 +643,12 @@ impl RenderOnce for Card {
                 div()
                     .id("card-action")
                     .flex_none()
-                    .invisible()
-                    .group_hover(CARD_GROUP, |style| style.visible())
+                    .map(|this| match collapsed {
+                        true => this.hidden().group_hover(CARD_GROUP, |style| style.flex()),
+                        false => this
+                            .invisible()
+                            .group_hover(CARD_GROUP, |style| style.visible()),
+                    })
                     .child(action)
             }));
 

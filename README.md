@@ -17,7 +17,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/pelletiermaxime/sonora/ci.yml?style=flat-square&label=build)](https://github.com/pelletiermaxime/sonora/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pelletiermaxime/sonora?style=flat-square&label=license)](./COPYING)
 
-### A native music streaming client, built with Rust and GPUI
+### A native, familiar music streaming client
 
 Stream from your favorite services and play local files — all in one **native** app.
 </div>
@@ -70,15 +70,15 @@ The screenshots below show the upstream player; they are not screenshots of the 
     <table>
       <tr>
         <td colspan="2">
-          <img width="1613" height="981" alt="image" src="https://github.com/user-attachments/assets/7952a912-7fbc-4186-b467-a08dd7e71e22" />
+          <img width="1556" height="967" alt="image" src="https://github.com/user-attachments/assets/c797cb19-9631-45b0-91b6-695f28f4143d" />
         </td>
       </tr>
       <tr>
         <td width="50%">
-          <img width="1623" height="987" alt="image" src="https://github.com/user-attachments/assets/580bf9d6-db85-4fde-b599-82ba2a28cc51" />
+          <img width="1555" height="966" alt="image" src="https://github.com/user-attachments/assets/b556bcd0-2823-485f-83f3-41e1099fdc45" />
         </td>
         <td width="50%">
-          <img width="1623" height="987" alt="image" src="https://github.com/user-attachments/assets/64fcd709-5917-432c-a418-2e07527343d2" />
+          <img width="1555" height="966" alt="image" src="https://github.com/user-attachments/assets/f27400ab-9264-4d82-9a70-e0a60e0c3a5f" />
         </td>
       </tr>
     </table>
@@ -97,16 +97,6 @@ The screenshots below show the upstream player; they are not screenshots of the 
 > Sonora is not designed to circumvent subscriptions or other restrictions put in place by music streaming platforms. If the service demands that you have a valid subscription in order to play back their tracks, so will Sonora.
 >
 > Features aimed at ripping, downloading, distributing, or gaining access to protected streaming content are out of scope for the project.
-
-## Features
-
-- **Apple Music, Spotify, YouTube Music, Deezer, Tidal, Subsonic/Navidrome** and local playback
-- Gapless playback, audio normalization, shuffle, sleep timer
-- Synced/karaoke lyrics, background vocals, and romanization
-- Scrobbling with LastFM, ListenBrainz, LibreFM, and Maloja
-- Themes, fonts, icons, transparency, blur, and window styling
-- Discord Rich Presence, native file opening
-- macOS, Windows, Linux, and (probably) FreeBSD support
 
 ## Installation
 
@@ -208,46 +198,27 @@ Sonora's upstream community is on [Discord](https://discord.gg/a8N8Tx23rV) and
 [Matrix](https://matrix.to/#/#sonora:nolight.dev). Report problems with this fork's additions
 in this repository rather than asking upstream to support the custom features.
 
-## AI policy
-
-We have nothing against the usage of LLMs in the project — in fact, we use them ourselves.
-We believe that AI can speed up development in a lot of meaningful ways and be a useful
-tool for learning new concepts. We have also found it particularly helpful for
-contributing to substantial codebases such as GPUI and librespot, where it has helped
-us quickly locate the relevant parts of the code.
-
-**However**, using AI cannot act as an excuse for failing to
-understand, review, and test the changes proposed. Furthermore, we expect communication
-with a real person, not a computer. This includes but is not limited to PR/issue text
-generation, comments in discussions, etc. A short summary of minor changes can be
-generated and does not need to be disclosed explicitly, but the reasoning and motivation
-behind a change must come from the contributor and reflect their own understanding.
-
-Note that PRs that fail to adhere to these requirements may be rejected without further notice.
-
-AI-assisted proofreading and translation of human-written text are permitted.
-
 ## Translations
 
 <!-- i18n:start -->
 
 | Language | Translated | Coverage |
 | --- | --- | --- |
-| English (`en-US`) | 1323/1323 | 100% |
-| Deutsch (`de`) | 1129/1323 | 85% |
-| Español (`es`) | 1129/1323 | 85% |
-| Français (`fr`) | 1130/1323 | 85% |
-| Italiano (`it`) | 1129/1323 | 85% |
-| Bahasa Indonesia (`id`) | 1129/1323 | 85% |
-| 日本語 (`ja`) | 1129/1323 | 85% |
-| Русский (`ru`) | 1129/1323 | 85% |
-| Українська (`uk`) | 1129/1323 | 85% |
-| Polski (`pl`) | 1129/1323 | 85% |
-| Čeština (`cs`) | 1129/1323 | 85% |
-| Português (Brasil) (`pt-BR`) | 1129/1323 | 85% |
-| 简体中文 (`zh-CN`) | 1129/1323 | 85% |
-| Türkçe (`tr`) | 1129/1323 | 85% |
-| Shqip (`sq`) | 1129/1323 | 85% |
+| English (`en-US`) | 1365/1365 | 100% |
+| Deutsch (`de`) | 1105/1365 | 81% |
+| Español (`es`) | 1105/1365 | 81% |
+| Français (`fr`) | 1106/1365 | 81% |
+| Italiano (`it`) | 1105/1365 | 81% |
+| Bahasa Indonesia (`id`) | 1105/1365 | 81% |
+| 日本語 (`ja`) | 1105/1365 | 81% |
+| Русский (`ru`) | 1151/1365 | 84% |
+| Українська (`uk`) | 1107/1365 | 81% |
+| Polski (`pl`) | 1107/1365 | 81% |
+| Čeština (`cs`) | 1105/1365 | 81% |
+| Português (Brasil) (`pt-BR`) | 1105/1365 | 81% |
+| 简体中文 (`zh-CN`) | 1105/1365 | 81% |
+| Türkçe (`tr`) | 1105/1365 | 81% |
+| Shqip (`sq`) | 1105/1365 | 81% |
 
 <!-- i18n:end -->
 

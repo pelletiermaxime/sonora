@@ -343,7 +343,7 @@ impl Origin {
         let tracks = match self.whence {
             Whence::Album => client.album_tracks(&self.id).await?,
             Whence::Playlist => client.playlist_tracks(&self.id).await?,
-            Whence::Artist => client.artist(&self.id).await?.top_tracks,
+            Whence::Artist => client.artist_tracks(&self.id).await?,
             Whence::Saved => client.saved_tracks().await?,
             Whence::Radio => {
                 let (mut tracks, next) = client.track_radio(&self.id, None).await?;
@@ -419,6 +419,8 @@ pub struct Playback {
     queue: Entity<Queue>,
     settings: Entity<AppSettings>,
     level: f32,
+    /// The level the volume slider is being dragged to, heard and shown but not yet saved.
+    sliding: Option<f32>,
     normalisation: bool,
     gapless: bool,
     transcode: Transcode,
@@ -513,6 +515,9 @@ pub struct Playback {
     devices: Option<WeakEntity<Devices>>,
     /// Whether the call being carried out is this app's own doing, which never steers.
     local: bool,
+    /// How many seeks the listener asked for, which a Sonora Session watches to share them. Seeks
+    /// made for the session itself, through `locally`, are not counted.
+    seeks: u64,
 }
 
 impl EventEmitter<PlaybackEvent> for Playback {}
@@ -603,6 +608,7 @@ impl Playback {
             queue,
             settings,
             level,
+            sliding: None,
             normalisation,
             gapless,
             transcode,
@@ -652,6 +658,7 @@ impl Playback {
             open: None,
             devices: None,
             local: false,
+            seeks: 0,
         };
         // Start the local engine at startup so files can play before the first scan.
         if let Some(factory) = playback.session.read(cx).local_playback() {
@@ -735,6 +742,9 @@ impl Playback {
 
     /// The volume the controls show and change, on the other device while one is steered.
     pub fn shown_volume(&self, cx: &App) -> f32 {
+        if let Some(level) = self.sliding {
+            return level;
+        }
         self.steered(cx)
             .map_or(self.level, |steered| steered.device.volume)
     }
@@ -1155,6 +1165,23 @@ impl Playback {
             self.begin(tracks, 0, origin, cx);
             return None;
         }
+        // In a Jam a song the listener queues names them, as it does for everyone else. A song
+        // the device network queues here comes from inside an update of `Devices`, which cannot
+        // be read then, and it already names whoever queued it.
+        let you = match (placement, self.local) {
+            (QueuePlacement::Last, _) | (_, true) => None,
+            _ => self
+                .devices
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .and_then(|devices| devices.read(cx).you()),
+        };
+        let tracks = tracks.into_iter().map(|mut track| {
+            if track.added_by.is_none() {
+                track.added_by = you.clone();
+            }
+            track
+        });
         self.queue
             .update(cx, |queue, cx| queue.insert(tracks, origin, placement, cx));
         Some(placement)
@@ -1392,7 +1419,7 @@ impl Playback {
     /// Fetches a collection and starts the queue from it, keeping the continuation if it is a
     /// station. Shows Loading only when nothing plays yet, so a failure mid-playback is logged
     /// rather than shown.
-    fn gather(&mut self, origin: Origin, cx: &mut Context<Self>) {
+    fn gather(&mut self, origin: Origin, shuffled: bool, cx: &mut Context<Self>) {
         let Some(client) = self.client_for(&origin.id, cx) else {
             return;
         };
@@ -1407,6 +1434,10 @@ impl Playback {
             async move { from.load(&*client).await },
             move |this, loaded, cx| match loaded {
                 Ok((tracks, next)) => {
+                    if shuffled && !tracks.is_empty() {
+                        this.queue
+                            .update(cx, |queue, cx| queue.set_shuffle(true, cx));
+                    }
                     let index = this.opener(&tracks, cx).unwrap_or_default();
                     let station = next.map(|next| Station {
                         origin: origin.clone(),
@@ -2102,10 +2133,20 @@ impl Playback {
     pub fn play_origin(&mut self, origin: Origin, cx: &mut Context<Self>) {
         match origin.whence {
             Whence::Album | Whence::Playlist | Whence::Artist | Whence::Radio => {
-                self.gather(origin, cx)
+                self.gather(origin, false, cx)
             }
             // the table plays these
             Whence::Saved | Whence::Local => {}
+        }
+    }
+
+    /// Turns shuffle on and plays `origin` from a random track once its tracks are loaded.
+    pub fn shuffle_origin(&mut self, origin: Origin, cx: &mut Context<Self>) {
+        if matches!(
+            origin.whence,
+            Whence::Album | Whence::Playlist | Whence::Artist | Whence::Radio
+        ) {
+            self.gather(origin, true, cx);
         }
     }
 
@@ -2122,6 +2163,9 @@ impl Playback {
     /// audio from it, and a second seek meanwhile waits for the first to land. A restored track
     /// not yet held by the engine only moves its resume point.
     pub fn seek(&mut self, position: Duration, cx: &mut Context<Self>) {
+        if !self.local {
+            self.seeks += 1;
+        }
         if self.steer(|_| Command::Seek(position), cx) {
             return;
         }
@@ -2202,6 +2246,11 @@ impl Playback {
         self.seek(position, cx);
     }
 
+    /// How many seeks the listener asked for since launch.
+    pub fn seeks(&self) -> u64 {
+        self.seeks
+    }
+
     pub fn state(&self) -> &PlaybackState {
         &self.state
     }
@@ -2250,6 +2299,7 @@ impl Playback {
     }
 
     pub fn set_volume(&mut self, level: f32, cx: &mut Context<Self>) {
+        self.sliding = None;
         if let Some((devices, steered)) = self.steering(cx) {
             devices.update(cx, |devices, cx| {
                 devices.set_volume(&steered.device.id, level.clamp(0., 1.), cx)
@@ -2260,6 +2310,33 @@ impl Playback {
         self.level = level.clamp(0., 1.);
         self.settings
             .update(cx, |settings, cx| settings.set_volume(self.level, cx));
+        self.apply_gain();
+        cx.notify();
+    }
+
+    /// Follows the volume slider while it is dragged: the level is heard at once, but nothing is
+    /// saved and no observer wakes, since nearly every view and the media controls observe
+    /// playback. The caller repaints itself, and calls `end_volume_slide` when the slider is let go.
+    pub fn slide_volume(&mut self, level: f32, cx: &App) {
+        let level = level.clamp(0., 1.);
+        self.sliding = Some(level);
+        if self.steer(|_| Command::Volume(level), cx) {
+            return;
+        }
+        self.level = level;
+        self.apply_gain();
+    }
+
+    /// Saves the level the slider was let go at and tells every observer, once per drag.
+    pub fn end_volume_slide(&mut self, cx: &mut Context<Self>) {
+        let Some(level) = self.sliding else {
+            return;
+        };
+        self.set_volume(level, cx);
+    }
+
+    /// Sends the gain for the current level to both engines.
+    fn apply_gain(&self) {
         let level = gain(self.level);
         if let Some(engine) = self.engine.as_ref() {
             engine.set_gain(level);
@@ -2267,7 +2344,6 @@ impl Playback {
         if let Some(engine) = self.local_engine.as_ref() {
             engine.set_gain(level);
         }
-        cx.notify();
     }
 
     pub fn normalisation(&self) -> bool {
@@ -2487,8 +2563,8 @@ impl Playback {
     /// Rebuilds every running engine on the audio device it should play on now, as when the
     /// device is chosen in settings.
     pub(crate) fn restart_outputs(&mut self, cx: &mut Context<Self>) {
-        self.restart_output(false, cx);
-        self.restart_output(true, cx);
+        self.restart_output(false, None, cx);
+        self.restart_output(true, None, cx);
     }
 
     /// Rebuilds the local or the streaming engine, if it is running, on the audio device it
@@ -2496,7 +2572,12 @@ impl Playback {
     /// playing if it was and held paused there if it was not; the other one, or one with nothing
     /// loaded, comes back empty, so its stream still reopens at the device's new rate. A failed
     /// track is left as it is.
-    fn restart_output(&mut self, local: bool, cx: &mut Context<Self>) {
+    fn restart_output(
+        &mut self,
+        local: bool,
+        heard: Option<(String, Duration)>,
+        cx: &mut Context<Self>,
+    ) {
         let running = match local {
             true => self.local_engine.is_some(),
             false => self.engine.is_some(),
@@ -2515,7 +2596,14 @@ impl Playback {
             .track
             .clone()
             .filter(|track| track.id.is_some() && local == self.local_active());
-        let at = self.live_position();
+        // what the output had played beats the clock, which kept running while the device
+        // switched and would put the reload past the start of a track that just began
+        let at = heard
+            .filter(|(id, _)| {
+                current.as_ref().and_then(|track| track.id.as_deref()) == Some(id.as_str())
+            })
+            .map(|(_, at)| at)
+            .unwrap_or_else(|| self.live_position());
         let playing = match self.state {
             PlaybackState::Playing => Some(true),
             PlaybackState::Loading => Some(self.intent == Intent::Play),
@@ -2654,8 +2742,8 @@ impl Playback {
     fn on_backend_event(&mut self, event: BackendEvent, local: bool, cx: &mut Context<Self>) {
         // an engine whose output has to reopen is rebuilt whether it plays the current track
         // or sits idle, since a dead engine would take the next track and play nothing
-        if let BackendEvent::OutputChanged = event {
-            self.restart_output(local, cx);
+        if let BackendEvent::OutputChanged { heard } = event {
+            self.restart_output(local, heard, cx);
             return;
         }
         // kept for whichever track it names, since a queued track reports before it plays
@@ -2691,7 +2779,7 @@ impl Playback {
         }
         match event {
             // rebuilt or kept before the filters above
-            BackendEvent::OutputChanged | BackendEvent::Signal { .. } => {}
+            BackendEvent::OutputChanged { .. } | BackendEvent::Signal { .. } => {}
             BackendEvent::Unavailable { .. }
             | BackendEvent::Throttled { .. }
             | BackendEvent::Refused
