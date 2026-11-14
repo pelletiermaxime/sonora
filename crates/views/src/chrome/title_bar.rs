@@ -248,6 +248,10 @@ impl Render for TitleBar {
         let theme = cx.theme();
         let height = ui::snapped(theme.metrics.title_bar, window);
         let navigation = self.options.navigation;
+        let sidebar_right = self
+            .options
+            .sidebar_right
+            .filter(|_| SidebarRight::available(window));
         let content = self.options.content.clone();
         let window_fullscreen = window.is_fullscreen();
         let settings = self.settings.read(cx);
@@ -322,7 +326,12 @@ impl Render for TitleBar {
                         (false, Some(inset)) => this.pl(inset),
                         (false, None) => this.pl_3(),
                     })
-                    .pr_3()
+                    // The sidebar toggle sits as close to the history buttons as they sit to
+                    // each other.
+                    .map(|this| match navigation {
+                        true => this.pr_1(),
+                        false => this.pr_3(),
+                    })
                     .gap_1()
                     .when(leading, |this| {
                         this.child(window_controls(true, traffic_light))
@@ -348,16 +357,14 @@ impl Render for TitleBar {
                         )
                     })
                     .children(content)
-                    .pr_3(),
+                    .map(|this| match sidebar_right.is_some() {
+                        true => this.pr_1(),
+                        false => this.pr_3(),
+                    }),
             )
-            .when_some(
-                self.options
-                    .sidebar_right
-                    .filter(|_| SidebarRight::available(window)),
-                |this, open| {
-                    this.child(div().flex_none().pr_3().child(self.lyrics_toggle(open, cx)))
-                },
-            )
+            .when_some(sidebar_right, |this, open| {
+                this.child(div().flex_none().pr_3().child(self.lyrics_toggle(open, cx)))
+            })
             .when(decorated && !leading, |this| {
                 this.child(
                     div()

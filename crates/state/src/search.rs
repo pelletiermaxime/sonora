@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui::{Context, Entity, Task};
-use music::{Album, ArtistRef, Playlist, SavedArtist, Track};
+use music::link::{self, Linked};
+use music::{Album, ArtistRef, MusicApi, Playlist, SavedArtist, Track};
 
 use crate::{Io, Library, Network, Session, SessionEvent, Shelf, join};
 
@@ -62,7 +63,7 @@ pub struct PlaylistHit {
 
 #[derive(Clone)]
 pub enum Hit {
-    Song(Track),
+    Song(Box<Track>),
     Artist(ArtistHit),
     Album(AlbumHit),
     Playlist(PlaylistHit),
@@ -131,6 +132,10 @@ struct Scored {
 pub struct Search {
     query: String,
     served: Option<String>,
+    /// The typed query or the linked item's name used to rank matching results.
+    matching: String,
+    /// The resolved item kept ahead of ordinary matches for the same name.
+    linked: Option<Hit>,
     catalog: Catalog,
     portraits: HashMap<String, String>,
     hits: Vec<Hit>,
@@ -169,6 +174,8 @@ impl Search {
         Self {
             query: String::new(),
             served: None,
+            matching: String::new(),
+            linked: None,
             catalog: Catalog::default(),
             portraits: HashMap::new(),
             hits: Vec::new(),
@@ -184,6 +191,11 @@ impl Search {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// The resolved item name used to search for matches to a pasted link.
+    pub fn linked_query(&self) -> Option<&str> {
+        self.linked.as_ref().map(|_| self.matching.as_str())
     }
 
     pub fn hits(&self) -> &[Hit] {
@@ -211,6 +223,8 @@ impl Search {
         self.faces = None;
         self.query.clear();
         self.served = None;
+        self.matching.clear();
+        self.linked = None;
         self.catalog.clear();
         self.portraits.clear();
         self.hits.clear();
@@ -218,6 +232,8 @@ impl Search {
         self.error = None;
     }
 
+    /// Debounces text searches and resolves active-provider links into metadata and name searches.
+    /// Changing the query cancels pending work and signing out clears the results.
     pub fn ask(&mut self, query: &str, cx: &mut Context<Self>) {
         let query = query.trim().to_owned();
         let answered = self.loading || self.served.as_deref() == Some(query.as_str());
@@ -225,7 +241,17 @@ impl Search {
             return;
         }
         self.query = query.clone();
+        self.matching = query.clone();
+        self.linked = None;
         self.error = None;
+        self.task = None;
+        let linked = self.session.read(cx).read_link(&query);
+        if linked.is_some() {
+            self.matching.clear();
+            self.catalog.clear();
+            self.faces = None;
+            self.portraits.clear();
+        }
 
         if query.is_empty() {
             self.task = None;
@@ -244,6 +270,13 @@ impl Search {
             return;
         };
 
+        if let Some((slug, _)) = &linked
+            && self.session.read(cx).provider_slug() != Some(*slug)
+        {
+            self.loading = false;
+            cx.notify();
+            return;
+        }
         self.loading = true;
         cx.notify();
 
@@ -251,22 +284,66 @@ impl Search {
         self.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DEBOUNCE).await;
 
+            let mut asked = query.clone();
+            if let Some((slug, mut linked)) = linked {
+                if linked == Linked::Short {
+                    let address = query.clone();
+                    let followed =
+                        join(io.spawn(async move { Ok(link::follow(&address).await) })).await;
+                    let resolved = this
+                        .update(cx, |this, cx| {
+                            let followed = followed.ok().flatten()?;
+                            let session = this.session.read(cx);
+                            std::iter::once(followed.address.as_str())
+                                .chain(link::addresses(&followed.page))
+                                .find_map(|address| {
+                                    let (owner, linked) = session.read_link(address)?;
+                                    (owner == slug && linked != Linked::Short).then_some(linked)
+                                })
+                        })
+                        .ok()
+                        .flatten();
+                    linked = resolved.unwrap_or(Linked::Short);
+                }
+                let api = client.clone();
+                let found =
+                    join(io.spawn(async move { linked_hit(api.as_ref(), linked).await })).await;
+                let Ok(hit) = found else {
+                    this.update(cx, |this, cx| {
+                        if this.query == query {
+                            this.loading = false;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                    return;
+                };
+                asked = hit_name(&hit).to_owned();
+                this.update(cx, |this, cx| {
+                    if this.query == query {
+                        this.matching = asked.clone();
+                        this.linked = Some(hit);
+                        this.rank(cx);
+                    }
+                })
+                .ok();
+            }
+
             let songs = {
                 let client = client.clone();
-                let asked = query.clone();
+                let asked = asked.clone();
                 io.spawn(async move { client.search(&asked).await })
             };
             let albums = {
                 let client = client.clone();
-                let asked = query.clone();
+                let asked = asked.clone();
                 io.spawn(async move { client.search_albums(&asked).await })
             };
             let playlists = {
                 let client = client.clone();
-                let asked = query.clone();
+                let asked = asked.clone();
                 io.spawn(async move { client.search_playlists(&asked).await })
             };
-            let asked = query.clone();
             let artists = io.spawn(async move { client.search_artists(&asked).await });
             let (songs, albums, playlists, artists) = (
                 join(songs).await,
@@ -352,7 +429,7 @@ impl Search {
     }
 
     fn rank(&mut self, cx: &mut Context<Self>) {
-        let query = self.query.trim();
+        let query = self.matching.trim();
         if query.is_empty() {
             self.hits.clear();
             cx.notify();
@@ -371,8 +448,69 @@ impl Search {
                 query,
             )
         };
+        if let Some(linked) = &self.linked {
+            self.hits.retain(|hit| !same_hit(hit, linked));
+            self.hits.insert(0, linked.clone());
+        }
         self.fetch_portraits(cx);
         cx.notify();
+    }
+}
+
+/// Loads the linked item's metadata without changing the active provider or playback.
+async fn linked_hit(client: &dyn MusicApi, linked: Linked) -> Result<Hit> {
+    match linked {
+        Linked::Track(id) => Ok(Hit::Song(Box::new(client.track(&id).await?))),
+        Linked::Artist(id) => {
+            let artist = client.artist(&id).await?;
+            Ok(Hit::Artist(ArtistHit {
+                name: artist.name,
+                id: Some(id),
+                cover: artist.cover_large,
+                saved: 0,
+            }))
+        }
+        Linked::Album(id) => {
+            let album = client.album(&id).await?.album;
+            Ok(Hit::Album(AlbumHit {
+                id: album.id,
+                name: album.name,
+                artists: album.artists,
+                artist_refs: album.artist_refs,
+                cover: album.cover,
+                year: album.year,
+            }))
+        }
+        Linked::Playlist(id) => {
+            let playlist = client.playlist(&id).await?.playlist;
+            Ok(Hit::Playlist(PlaylistHit {
+                id: playlist.id,
+                name: playlist.name,
+                owner: playlist.owner,
+                cover: playlist.cover,
+            }))
+        }
+        _ => anyhow::bail!("link has no searchable metadata"),
+    }
+}
+
+fn hit_name(hit: &Hit) -> &str {
+    match hit {
+        Hit::Song(track) => &track.name,
+        Hit::Artist(artist) => &artist.name,
+        Hit::Album(album) => &album.name,
+        Hit::Playlist(playlist) => &playlist.name,
+    }
+}
+
+/// Compares provider ids so the linked item appears only once in the suggestions.
+fn same_hit(left: &Hit, right: &Hit) -> bool {
+    match (left, right) {
+        (Hit::Song(left), Hit::Song(right)) => left.id.is_some() && left.id == right.id,
+        (Hit::Artist(left), Hit::Artist(right)) => left.id.is_some() && left.id == right.id,
+        (Hit::Album(left), Hit::Album(right)) => left.id == right.id,
+        (Hit::Playlist(left), Hit::Playlist(right)) => left.id == right.id,
+        _ => false,
     }
 }
 
@@ -421,7 +559,7 @@ fn songs(library: &[Track], catalog: &[Track], query: &Query) -> Vec<Scored> {
         scored.push(Scored {
             score,
             popularity: track.popularity,
-            hit: Hit::Song(track.clone()),
+            hit: Hit::Song(Box::new(track.clone())),
         });
     }
 
@@ -539,7 +677,8 @@ fn playlists_of(playlists: &[Playlist], catalog: &[Playlist], query: &Query) -> 
 
 /// The artists that fit `query`. The ones the provider's artist search found rank by their whole
 /// place in its answer, as found songs do. Artists drawn from songs get only part of their song's
-/// place, so they come after the found ones unless their name fits the query better.
+/// place, so they come after the found ones unless their name fits the query better. A plain video
+/// channel credited on a track or album is never offered as an artist.
 fn artists(
     library: &[Track],
     catalog: &Catalog,
@@ -591,11 +730,12 @@ fn artists(
         let artist = ArtistRef {
             name: found.name.clone(),
             id: Some(found.id.clone()),
+            channel: false,
         };
         record(&artist, found.cover.as_ref(), score, 0, 0);
     }
     for (track, rank) in sources(library, &catalog.tracks) {
-        for artist in &track.artist_refs {
+        for artist in track.artist_refs.iter().filter(|artist| !artist.channel) {
             let Some(score) = favored(named(&artist.name, query), rank).max(inherited(rank)) else {
                 continue;
             };
@@ -604,7 +744,7 @@ fn artists(
         }
     }
     for album in albums {
-        for artist in &album.artist_refs {
+        for artist in album.artist_refs.iter().filter(|artist| !artist.channel) {
             let Some(score) = favored(named(&artist.name, query), None) else {
                 continue;
             };
@@ -756,6 +896,7 @@ mod tests {
                 .map(|name| ArtistRef {
                     name: name.to_owned(),
                     id: None,
+                    channel: false,
                 })
                 .collect(),
             album: album.to_owned(),

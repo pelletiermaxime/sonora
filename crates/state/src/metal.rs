@@ -357,7 +357,7 @@ impl MetalDiscovery {
                             .map(|error| error.retry_at);
                         this.album_retry_until = this
                             .album_plays_retry_at
-                            .unwrap_or(timestamp() + ALBUM_RETRY_DELAY);
+                            .unwrap_or_else(|| timestamp() + ALBUM_RETRY_DELAY);
                     }
                 }
                 cx.notify();

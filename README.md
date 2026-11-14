@@ -174,8 +174,7 @@ cargo run --locked --package sonora
 ```
 
 The Linux Cargo configuration uses mold; install it or run with `RUSTFLAGS=""` if unavailable.
-The Nix flake's default package points to an upstream released binary, so use Cargo to build
-the checked-out fork instead of `nix build` when developing.
+The Nix flake's default package builds the checked-out fork from source.
 
 The inherited [release workflow](https://github.com/pelletiermaxime/sonora/actions/workflows/release.yml)
 builds Linux x86_64 and ARM64 binaries, AppImages and Flatpak bundles, a universal macOS DMG,
@@ -204,21 +203,21 @@ in this repository rather than asking upstream to support the custom features.
 
 | Language | Translated | Coverage |
 | --- | --- | --- |
-| English (`en-US`) | 1365/1365 | 100% |
-| Deutsch (`de`) | 1105/1365 | 81% |
-| Español (`es`) | 1105/1365 | 81% |
-| Français (`fr`) | 1106/1365 | 81% |
-| Italiano (`it`) | 1105/1365 | 81% |
-| Bahasa Indonesia (`id`) | 1105/1365 | 81% |
-| 日本語 (`ja`) | 1105/1365 | 81% |
-| Русский (`ru`) | 1151/1365 | 84% |
-| Українська (`uk`) | 1107/1365 | 81% |
-| Polski (`pl`) | 1107/1365 | 81% |
-| Čeština (`cs`) | 1105/1365 | 81% |
-| Português (Brasil) (`pt-BR`) | 1105/1365 | 81% |
-| 简体中文 (`zh-CN`) | 1105/1365 | 81% |
-| Türkçe (`tr`) | 1105/1365 | 81% |
-| Shqip (`sq`) | 1105/1365 | 81% |
+| English (`en-US`) | 1431/1431 | 100% |
+| Deutsch (`de`) | 1108/1431 | 77% |
+| Español (`es`) | 1106/1431 | 77% |
+| Français (`fr`) | 1107/1431 | 77% |
+| Italiano (`it`) | 1106/1431 | 77% |
+| Bahasa Indonesia (`id`) | 1106/1431 | 77% |
+| 日本語 (`ja`) | 1106/1431 | 77% |
+| Русский (`ru`) | 1207/1431 | 84% |
+| Українська (`uk`) | 1108/1431 | 77% |
+| Polski (`pl`) | 1108/1431 | 77% |
+| Čeština (`cs`) | 1106/1431 | 77% |
+| Português (Brasil) (`pt-BR`) | 1106/1431 | 77% |
+| 简体中文 (`zh-CN`) | 1106/1431 | 77% |
+| Türkçe (`tr`) | 1106/1431 | 77% |
+| Shqip (`sq`) | 1106/1431 | 77% |
 
 <!-- i18n:end -->
 

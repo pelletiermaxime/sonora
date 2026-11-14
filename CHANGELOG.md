@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-13
+
+### Changed
+
+- Sync with upstream Sonora 0.49.1 (`5ee03cb0`). See the
+  [upstream changelog](https://github.com/sonorahq/sonora/blob/5ee03cb01d25c9d48c398e4c89303e2632b28bde/CHANGELOG.md)
+  for the included features and fixes.
+
 ## [1.0.6] - 2026-11-06
 
 ### Changed
@@ -2085,7 +2093,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Initial release: a native Spotify client with playback, an interactive queue, the saved library,
 search, album, playlist, artist and song pages, context menus and adaptive theming.
 
-[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.6...main
+[Unreleased]: https://github.com/pelletiermaxime/sonora/compare/v1.0.7...main
+[1.0.7]: https://github.com/pelletiermaxime/sonora/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/pelletiermaxime/sonora/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/pelletiermaxime/sonora/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/pelletiermaxime/sonora/compare/v1.0.3...v1.0.4
