@@ -127,6 +127,12 @@ pub trait Fetch: Send + Sync + 'static {
         false
     }
 
+    /// Whether a failed load means the provider refuses the network the app connects from. The
+    /// engine reports that as blocked, since every other track would fail the same way.
+    fn blocked(&self, _error: &anyhow::Error) -> bool {
+        false
+    }
+
     /// What to call the file of a plain download of track `id`, such as its artist and title.
     /// `None` names it after a hash of the id. Only a provider whose shelf keeps plain files
     /// is asked.
@@ -499,6 +505,7 @@ async fn engine_loop<F: Fetch>(
     let spawned = std::thread::Builder::new()
         .name(format!("{}-audio", fetch.name()))
         .spawn(move || {
+            crate::output::raise_decoder_priority();
             audio_loop(
                 audio_fetch,
                 job_rx,
@@ -552,7 +559,11 @@ async fn engine_loop<F: Fetch>(
                 match command {
                     Command::Load { id, at, play, seamless } => {
                         let joined = segued.as_deref() == Some(id.as_str());
+                        // Only an engine that is still sounding can be carried on from. A
+                        // silenced one holds a track paused where it stopped, and resuming it
+                        // would play that track instead of this one.
                         if seamless
+                            && wanted
                             && at.is_none()
                             && (current.as_deref() == Some(id.as_str()) || joined)
                         {
@@ -717,9 +728,10 @@ async fn engine_loop<F: Fetch>(
                             awaited = None;
                             inflight = None;
                             announcing = None;
-                            let refusal = match fetch.gated(&error) {
-                                true => PlaybackEvent::Gated,
-                                false => PlaybackEvent::Unavailable { id: Some(id) },
+                            let refusal = match (fetch.gated(&error), fetch.blocked(&error)) {
+                                (true, _) => PlaybackEvent::Gated,
+                                (false, true) => PlaybackEvent::Blocked,
+                                (false, false) => PlaybackEvent::Unavailable { id: Some(id) },
                             };
                             events.send(refusal).ok();
                         }

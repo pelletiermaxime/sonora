@@ -16,7 +16,7 @@ pub enum LibraryTab {
 
 impl LibraryTab {
     /// The glyph of what the tab lists, the same one a pin of that kind falls back to.
-    pub fn icon(self) -> &'static str {
+    pub const fn icon(self) -> &'static str {
         match self {
             Self::Songs => ui::PinKind::Song.icon(),
             Self::Albums => ui::PinKind::Album.icon(),
@@ -26,25 +26,37 @@ impl LibraryTab {
     }
 }
 
+/// A row the sidebar can hide from Settings. The four library pages are rows of their own,
+/// each opening its page of the merged streaming and local library. Radio follows them, and only
+/// for a provider that lists stations. History and Settings always sit in the account menu, so
+/// their rows are optional and stay out of the sidebar until asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavEntry {
     Home,
     Discover,
     Search,
-    Library,
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+    Radio,
     History,
-    Local,
+    Settings,
     Pins,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Home,
         Self::Discover,
         Self::Search,
-        Self::Library,
         Self::History,
-        Self::Local,
+        Self::Settings,
+        Self::Songs,
+        Self::Albums,
+        Self::Artists,
+        Self::Playlists,
+        Self::Radio,
         Self::Pins,
     ];
 
@@ -53,9 +65,13 @@ impl NavEntry {
             Self::Home => "home",
             Self::Discover => "discover",
             Self::Search => "search",
-            Self::Library => "library",
+            Self::Songs => "songs",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+            Self::Playlists => "playlists",
+            Self::Radio => "radio",
             Self::History => "history",
-            Self::Local => "local",
+            Self::Settings => "settings",
             Self::Pins => "sidebar-pins",
         }
     }
@@ -65,11 +81,21 @@ impl NavEntry {
             Self::Home => "nav-home",
             Self::Discover => "nav-discover",
             Self::Search => "nav-search",
-            Self::Library => "nav-library",
+            Self::Songs => "nav-songs",
+            Self::Albums => "nav-albums",
+            Self::Artists => "nav-artists",
+            Self::Playlists => "nav-playlists",
+            Self::Radio => "nav-radio",
             Self::History => "nav-history",
-            Self::Local => "nav-local",
+            Self::Settings => "nav-settings",
             Self::Pins => "nav-pinned",
         }
+    }
+
+    /// Whether the row stays out of the sidebar until the listener adds it, rather than showing
+    /// until hidden.
+    pub fn optional(self) -> bool {
+        matches!(self, Self::Settings)
     }
 }
 
@@ -83,11 +109,10 @@ pub enum Screen {
     Albums,
     Playlists,
     Artists,
-    Imported,
 }
 
 impl Screen {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Home,
         Self::Discover,
         Self::Search,
@@ -95,7 +120,6 @@ impl Screen {
         Self::Albums,
         Self::Artists,
         Self::Playlists,
-        Self::Imported,
         Self::History,
     ];
 
@@ -109,7 +133,6 @@ impl Screen {
             Self::Albums => "albums",
             Self::Playlists => "playlists",
             Self::Artists => "artists",
-            Self::Imported => "imported",
         }
     }
 
@@ -123,26 +146,14 @@ impl Screen {
             Self::Albums => "nav-albums",
             Self::Playlists => "nav-playlists",
             Self::Artists => "nav-artists",
-            Self::Imported => "nav-local",
         }
     }
 
+    /// The screen a stored id names. The local music screen joined Songs, so its old id opens there.
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|screen| screen.id() == id)
-    }
-
-    /// Whether the screen shows account library data, and so stays empty in guest mode.
-    pub fn needs_account(self) -> bool {
-        match self {
-            Self::Home => false,
-            Self::Discover => false,
-            Self::Search => false,
-            Self::History => false,
-            Self::Songs => true,
-            Self::Albums => true,
-            Self::Playlists => true,
-            Self::Artists => true,
-            Self::Imported => false,
+        match id {
+            "imported" => Some(Self::Songs),
+            id => Self::ALL.into_iter().find(|screen| screen.id() == id),
         }
     }
 
@@ -156,12 +167,11 @@ impl Screen {
             Self::Albums => Destination::Library(LibraryTab::Albums),
             Self::Playlists => Destination::Library(LibraryTab::Playlists),
             Self::Artists => Destination::Library(LibraryTab::Artists),
-            Self::Imported => Destination::Local(LibraryTab::Songs),
         }
     }
 }
 
-/// One page of settings. The first twelve are sections of the six tabs, each tab showing its sections
+/// One page of settings. The first thirteen are sections of the six tabs, each tab showing its sections
 /// one after another on one scrolling page, and the last two are drill-ins that open from a row
 /// on their parent page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,13 +188,14 @@ pub enum SettingsPage {
     Discord,
     Scrobbling,
     About,
+    Keybinds,
     LyricsSources,
     MusicFolders,
 }
 
 impl SettingsPage {
     /// Every page, the sections first and the drill-ins after them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Providers,
         Self::General,
         Self::Appearance,
@@ -197,6 +208,7 @@ impl SettingsPage {
         Self::Discord,
         Self::Scrobbling,
         Self::About,
+        Self::Keybinds,
         Self::LyricsSources,
         Self::MusicFolders,
     ];
@@ -215,6 +227,7 @@ impl SettingsPage {
             Self::Discord => "discord",
             Self::Scrobbling => "scrobbling",
             Self::About => "about",
+            Self::Keybinds => "keybinds",
             Self::LyricsSources => "lyrics-sources",
             Self::MusicFolders => "music-folders",
         }
@@ -235,8 +248,9 @@ impl SettingsPage {
             Self::Discord => "settings-page-discord",
             Self::Scrobbling => "settings-page-scrobbling",
             Self::About => "settings-page-about",
-            Self::LyricsSources => "settings-page-lyrics-sources",
-            Self::MusicFolders => "settings-page-music-folders",
+            Self::Keybinds => "settings-page-keybinds",
+            Self::LyricsSources => "settings-lyrics-sources",
+            Self::MusicFolders => "settings-music-folders",
         }
     }
 
@@ -256,12 +270,14 @@ impl SettingsPage {
     /// The tab the page shows in. A drill-in belongs to its parent's tab.
     pub fn tab(self) -> SettingsTab {
         match self {
-            Self::General | Self::About => SettingsTab::General,
-            Self::Providers | Self::MusicFolders => SettingsTab::Providers,
+            Self::Providers | Self::MusicFolders | Self::General | Self::About => {
+                SettingsTab::General
+            }
             Self::Appearance | Self::PlayerBar | Self::NowPlaying => SettingsTab::Appearance,
             Self::Lyrics | Self::LyricsSources => SettingsTab::Lyrics,
             Self::Playback | Self::Sound | Self::Storage => SettingsTab::Playback,
             Self::Discord | Self::Scrobbling => SettingsTab::Integrations,
+            Self::Keybinds => SettingsTab::Keybinds,
         }
     }
 }
@@ -271,32 +287,32 @@ impl SettingsPage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
-    Providers,
     Appearance,
     Lyrics,
     Playback,
     Integrations,
+    Keybinds,
 }
 
 impl SettingsTab {
     /// Every tab, in the order the header shows them.
     pub const ALL: [Self; 6] = [
         Self::General,
-        Self::Providers,
         Self::Appearance,
         Self::Lyrics,
         Self::Playback,
         Self::Integrations,
+        Self::Keybinds,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::General => "general",
-            Self::Providers => "providers",
             Self::Appearance => "appearance",
             Self::Lyrics => "lyrics",
             Self::Playback => "playback",
             Self::Integrations => "integrations",
+            Self::Keybinds => "keybinds",
         }
     }
 
@@ -304,11 +320,11 @@ impl SettingsTab {
     pub fn key(self) -> &'static str {
         match self {
             Self::General => "settings-page-general",
-            Self::Providers => "settings-page-providers",
             Self::Appearance => "settings-page-appearance",
             Self::Lyrics => "settings-page-lyrics",
             Self::Playback => "settings-page-playback",
             Self::Integrations => "settings-tab-integrations",
+            Self::Keybinds => "settings-page-keybinds",
         }
     }
 
@@ -316,19 +332,22 @@ impl SettingsTab {
     pub fn icon(self) -> &'static str {
         match self {
             Self::General => "icons/settings.svg",
-            Self::Providers => "icons/user-round.svg",
             Self::Appearance => "icons/palette.svg",
             Self::Lyrics => "icons/mic-vocal.svg",
             Self::Playback => "icons/play.svg",
             Self::Integrations => "icons/link.svg",
+            Self::Keybinds => "icons/keyboard.svg",
         }
     }
 
     /// The pages the tab shows, top to bottom. The first is the one the tab opens on.
     pub fn sections(self) -> &'static [SettingsPage] {
         match self {
-            Self::General => &[SettingsPage::General, SettingsPage::About],
-            Self::Providers => &[SettingsPage::Providers],
+            Self::General => &[
+                SettingsPage::Providers,
+                SettingsPage::General,
+                SettingsPage::About,
+            ],
             Self::Appearance => &[
                 SettingsPage::Appearance,
                 SettingsPage::PlayerBar,
@@ -341,6 +360,7 @@ impl SettingsTab {
                 SettingsPage::Storage,
             ],
             Self::Integrations => &[SettingsPage::Discord, SettingsPage::Scrobbling],
+            Self::Keybinds => &[SettingsPage::Keybinds],
         }
     }
 
@@ -356,13 +376,14 @@ pub enum Destination {
     Discover,
     History,
     Library(LibraryTab),
-    Local(LibraryTab),
     Album(SharedString),
     Song(SharedString),
     Playlist(SharedString),
     Artist(SharedString),
     User(SharedString),
     Genre(SharedString),
+    /// The internet radio stations of a provider that lists them.
+    Radio,
     Search,
     Settings(SettingsPage),
     /// The equalizer's own settings page, opened from Sound.
@@ -378,18 +399,16 @@ impl From<&ui::Pin> for Destination {
             ui::PinKind::Artist => Destination::Artist(id),
             ui::PinKind::Playlist => Destination::Playlist(id),
             ui::PinKind::Song => Destination::Song(id),
+            ui::PinKind::Liked => Destination::Library(LibraryTab::Songs),
         }
     }
 }
 
 impl Destination {
+    /// Whether the sidebar row leading to `self` is lit while `other` is open. Every settings page
+    /// lights the one Settings row, and every other row is lit only on its own page.
     pub fn same_section(&self, other: &Destination) -> bool {
-        match (self, other) {
-            (Destination::Library(_), Destination::Library(_))
-            | (Destination::Local(_), Destination::Local(_)) => true,
-            _ if self.in_settings() && other.in_settings() => true,
-            _ => self == other,
-        }
+        (self.in_settings() && other.in_settings()) || self == other
     }
 
     /// Whether this destination is a settings page, the equalizer included.

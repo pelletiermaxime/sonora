@@ -2,13 +2,14 @@
 //! SCREAMING_SNAKE and the public REST api in snake_case, and neither is a stable contract,
 //! so every read goes through tolerant helpers rather than derived structs.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::{
-    Album, ArtistRef, Genre, GenreItem, GenreSection, Playlist, ReleaseType, SavedArtist, Track,
-    UserProfile, calendar,
+    AccountChoice, Album, ArtistRef, Genre, GenreItem, GenreSection, Playlist, ReleaseType,
+    SavedArtist, Track, UserProfile, calendar,
 };
 
 /// Sets a smart tracklist's id apart from a playlist's, so a later lookup knows to ask for
@@ -88,6 +89,18 @@ pub fn profile(user: &Value) -> UserProfile {
         display_name: text(user, &["BLOG_NAME"]).unwrap_or("Deezer").to_owned(),
         avatar: image("user", text(user, &["USER_PICTURE"]), 300),
     }
+}
+
+/// One member of `deezer.getChildAccounts` as a profile to pick, captioned the way the web
+/// player captions it. None for a member without an id.
+pub fn family_profile(member: &Value) -> Option<AccountChoice> {
+    Some(AccountChoice {
+        id: id(&member["USER_ID"])?,
+        name: text(member, &["BLOG_NAME"]).unwrap_or("Deezer").to_owned(),
+        detail: text(&member["EXTRA_FAMILY"], &["CAPTION"])
+            .filter(|caption| !caption.trim().is_empty())
+            .map(str::to_owned),
+    })
 }
 
 /// The `https://cdn-images.dzcdn.net/images/<kind>/<md5>/<size>x<size>-000000-80-0-0.jpg`
@@ -183,7 +196,8 @@ fn artists_of(value: &Value) -> (String, Vec<ArtistRef>) {
     (name.to_owned(), refs)
 }
 
-fn truthy(value: &Value, keys: &[&str]) -> bool {
+/// Whether the first field under any of `keys` is set, spelled as a bool, a number or a string.
+pub fn truthy(value: &Value, keys: &[&str]) -> bool {
     keys.iter()
         .find_map(|key| value.get(key))
         .map(|field| match field {
@@ -262,6 +276,23 @@ pub fn track_list(value: &Value) -> Vec<Track> {
         .and_then(Value::as_array)
         .map(|list| list.iter().filter_map(track).collect())
         .unwrap_or_default()
+}
+
+/// Copies the disc and track numbers of a gateway album listing onto the same tracks by id.
+/// The public album answer leaves both out, so a multi-disc album would otherwise count
+/// straight through. A track the listing does not name keeps what it had.
+pub fn number_tracks(tracks: &mut [Track], listing: &Value) {
+    let positions: HashMap<String, (u32, u32)> = track_list(listing)
+        .into_iter()
+        .filter_map(|listed| Some((listed.id?, (listed.disc_number, listed.track_number))))
+        .collect();
+    for track in tracks {
+        let Some(&(disc, number)) = track.id.as_ref().and_then(|id| positions.get(id)) else {
+            continue;
+        };
+        track.disc_number = disc;
+        track.track_number = number;
+    }
 }
 
 /// One album from either api.
@@ -351,6 +382,7 @@ pub fn playlist(value: &Value, user_id: &str) -> Option<Playlist> {
             .or_else(|| text(value, &["picture_medium"]).map(str::to_owned)),
         track_count: number(value, &["NB_SONG", "nb_tracks"]).unwrap_or(0) as u32,
         modified_at: when(value, &["DATE_MOD"]),
+        read_only: false,
     })
 }
 
@@ -497,6 +529,7 @@ fn made(id: String, name: &str, cover: Option<String>, track_count: u32) -> Play
         cover,
         track_count,
         modified_at: None,
+        read_only: false,
     }
 }
 

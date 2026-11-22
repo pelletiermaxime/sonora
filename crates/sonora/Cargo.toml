@@ -7,7 +7,10 @@ license.workspace = true
 [features]
 # the gpui frame overlay and repaint wash, off in normal builds
 profiler = ["gpui/profiler"]
-bundled-sqlite = ["state/bundled-sqlite"]
+# patch running debug builds from `dx serve --hot-patch`, see CONTRIBUTING.md
+hot-reload = ["gpui/hot-reload"]
+# compile the Metal shaders at launch, so a build needs no Xcode, as the Nix package on macOS does
+runtime-shaders = ["gpui_platform/runtime_shaders"]
 
 [dependencies]
 anyhow.workspace = true
@@ -69,7 +72,6 @@ raw-window-handle.workspace = true
 [target.'cfg(windows)'.dependencies]
 raw-window-handle.workspace = true
 resvg.workspace = true
-state = { workspace = true, features = ["bundled-sqlite"] }
 widestring.workspace = true
 windows.workspace = true
 windows-sys = { workspace = true, features = [

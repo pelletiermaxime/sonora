@@ -1,19 +1,26 @@
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, div};
+use gpui::{AnyElement, App, Context};
 use i18n::t;
 use state::{ConnectName, Sonora};
-use ui::{MenuItem, Picker, Switch};
+use ui::{Field, Form, MenuItem, Picker, Switch};
 
 use super::{Group, SettingsView, Slot};
 
 const CONNECT_NAME: &str = "spotify-connect-name";
 
 impl SettingsView {
-    /// The Spotify Connect group, left out while the signed-in provider has no device list.
-    /// The name rows only stand while the device is on, which it never is while Soloist plays.
+    /// The device list group, left out while the signed-in provider has no device list: Spotify
+    /// Connect, whose name rows only stand while the device is on, which it never is while
+    /// Soloist plays, or Jellyfin's remote control, named by the sign-in.
     pub(super) fn connect_groups(&self, cx: &App) -> Vec<Group> {
         if !Sonora::global(cx).devices.read(cx).supported() {
             return Vec::new();
+        }
+        if jellyfin(cx) {
+            return vec![
+                Group::new("settings-group-jellyfin-remote", "icons/speaker.svg")
+                    .rows([Slot::SpotifyConnect]),
+            ];
         }
 
         let settings = self.settings.read(cx);
@@ -33,10 +40,14 @@ impl SettingsView {
         let unavailable = self.soloist_plays(cx);
         let on = self.settings.read(cx).spotify_connect();
 
+        let label = match jellyfin(cx) {
+            true => t!("settings-jellyfin-remote"),
+            false => t!("settings-spotify-connect"),
+        };
         self.soloist_row_for(
-            t!("settings-spotify-connect"),
+            label.clone(),
             Switch::new("spotify-connect", on && !unavailable)
-                .name(t!("settings-spotify-connect"))
+                .name(label)
                 .disabled(unavailable)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings
@@ -75,13 +86,19 @@ impl SettingsView {
         )
     }
 
-    pub(super) fn spotify_connect_custom_row(&self) -> AnyElement {
+    pub(super) fn spotify_connect_custom_row(&self, cx: &App) -> AnyElement {
         self.row(
             t!("settings-spotify-connect-custom"),
-            div()
+            Form::new("settings-spotify-connect-form")
                 .w(Picker::WIDE)
-                .child(self.connect_name.clone())
+                .field(Field::new(&self.connect_name, cx))
                 .into_any_element(),
         )
     }
+}
+
+/// Whether the signed-in provider is Jellyfin, whose device list is its remote control and
+/// takes its device name from the sign-in.
+pub(super) fn jellyfin(cx: &App) -> bool {
+    Sonora::global(cx).session.read(cx).provider_slug() == Some("jellyfin")
 }

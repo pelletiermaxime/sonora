@@ -80,6 +80,7 @@ pub struct Flight {
     zoom: Option<Rc<Cell<Zoom>>>,
     above: bool,
     scales: bool,
+    present: f32,
     spring: SpringConfig,
     transfer_spring: Option<SpringConfig>,
 }
@@ -136,6 +137,7 @@ impl Flight {
             zoom: None,
             above: false,
             scales: true,
+            present: 1.,
             spring: Springs::FLIGHT,
             transfer_spring: None,
         }
@@ -200,6 +202,15 @@ impl Flight {
         self
     }
 
+    /// Draws the element at `scale` of its size about its centre, through the same layer that
+    /// carries it while it flies, for one shown larger or smaller than its layout. A layer scale
+    /// of the element's own would nest a second layer inside the flight's every frame it flies.
+    /// [`reports`](Self::reports) and sightings leave it out.
+    pub fn presents_at(mut self, scale: f32) -> Self {
+        self.present = scale;
+        self
+    }
+
     /// Slides the element without scaling it, for text, which keeps its size wherever layout
     /// puts it.
     pub fn unscaled(mut self) -> Self {
@@ -217,17 +228,6 @@ impl Flight {
     pub fn transfer_spring(mut self, spring: SpringConfig) -> Self {
         self.transfer_spring = Some(spring);
         self
-    }
-}
-
-impl Course {
-    /// Where the element showed last frame: its layout then, moved and scaled as it was drawn.
-    fn shown(&self, last: Bounds<Pixels>) -> Bounds<Pixels> {
-        posed(
-            last,
-            point(px(self.x.position()), px(self.y.position())),
-            self.scale.position(),
-        )
     }
 }
 
@@ -295,28 +295,48 @@ impl Element for Flight {
                     from: 1.,
                     to: 1.,
                 });
-                let start = match course.drawn {
+                match course.drawn {
                     Some(last) if follows && course.viewport == viewport && moved(last, bounds) => {
-                        course.spring = spring;
-                        Some(course.shown(last))
+                        let flying =
+                            !course.x.resting() || !course.y.resting() || !course.scale.resting();
+                        course
+                            .x
+                            .shift(f32::from(last.center().x - bounds.center().x));
+                        course
+                            .y
+                            .shift(f32::from(last.center().y - bounds.center().y));
+                        if scales && bounds.size.width > Pixels::ZERO {
+                            let ratio = last.size.width / bounds.size.width;
+                            course
+                                .scale
+                                .shift(course.scale.position() * ratio - course.scale.position());
+                            course.from = match flying {
+                                true => course.from * ratio,
+                                false => course.scale.position(),
+                            };
+                        }
+                        if !flying {
+                            course.spring = spring;
+                        }
                     }
-                    Some(_) => None,
-                    None => sighting,
-                };
+                    Some(_) => {}
+                    None => {
+                        if let Some(start) = sighting.filter(|_| bounds.size.width > Pixels::ZERO) {
+                            let from = start.center() - bounds.center();
+                            course.x.jump(f32::from(from.x));
+                            course.y.jump(f32::from(from.y));
+                            if scales {
+                                course.from = start.size.width / bounds.size.width;
+                                course.to = 1.;
+                                course.scale.jump(course.from);
+                            }
+                        }
+                    }
+                }
                 if course.viewport != viewport {
                     course.x.jump(0.);
                     course.y.jump(0.);
                     course.scale.jump(1.);
-                }
-                if let Some(start) = start.filter(|_| bounds.size.width > Pixels::ZERO) {
-                    let from = start.center() - bounds.center();
-                    course.x.jump(f32::from(from.x));
-                    course.y.jump(f32::from(from.y));
-                    if scales {
-                        course.from = start.size.width / bounds.size.width;
-                        course.to = 1.;
-                        course.scale.jump(course.from);
-                    }
                 }
                 course.drawn = Some(bounds);
                 course.viewport = viewport;
@@ -355,7 +375,7 @@ impl Element for Flight {
         if let Some(report) = &self.zoom {
             report.set(zoom);
         }
-        self.pose.set((offset, scale));
+        self.pose.set((offset, scale * self.present));
         if let Some(name) = &self.seen_as {
             cx.default_global::<Sightings>()
                 .0

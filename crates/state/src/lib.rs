@@ -40,6 +40,8 @@ mod signal;
 mod snapshot;
 mod soloist;
 mod song;
+mod sponsorblock;
+mod stations;
 mod tags;
 mod toast;
 mod updates;
@@ -52,7 +54,7 @@ pub use artist::{ArtistDetail, ArtistDetailEvent};
 pub use catalog_lookup::{CatalogCandidate, CatalogLookup, CatalogOpened, CatalogQuery};
 pub use control::Control;
 pub use cover::Cover;
-pub use detail::{Collection, Detail, Header};
+pub use detail::{Collection, Detail, DetailEvent, Header, Reorder};
 pub use devices::Devices;
 pub use downloads::{
     Active, Downloads, DownloadsChanged, Pending, Progress, Remaining, Subject, downloaded,
@@ -79,7 +81,9 @@ pub use network::{Network, Reconnected};
 pub use outputs::Outputs;
 pub use overload::OutputLevel;
 pub use pins::{PinSort, Pins};
-pub use playback::{Origin, Playback, PlaybackState, Sleep, Unreachable, Whence};
+pub use playback::{
+    Origin, Playback, PlaybackState, PositionTick, Sleep, Unreachable, VOLUME_STEP, Whence,
+};
 pub use profile::Profile;
 pub use queue::{
     Queue, QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, QueueView, Resume,
@@ -93,15 +97,20 @@ pub use search::{AlbumHit, ArtistHit, Hit, Kind, PlaylistHit, Search};
 pub use session::{Failure, ProviderInfo, Session, SessionEvent, SessionState};
 pub use settings::{
     AppSettings, ConnectName, DiscordName, FilterValue, FullscreenControlsAutohide, LYRICS_SOURCES,
-    PlayerBarLayout, Reloaded, RomanizationScripts, SYSTEM_FONT, SideTab, ThemeFamily, ThemeOffer,
-    ThemeVariant, VisualizerScreens, equalizer_profile_label, remember_window, window_placement,
+    PageWidth, PlayerBarLayout, Reloaded, RomanizationScripts, SYSTEM_FONT, SideTab, ThemeFamily,
+    ThemeOffer, ThemeVariant, VisualizerScreens, equalizer_profile_label, remember_window,
+    window_placement,
 };
 pub use signal::{Change, Equalizing, FLOAT_BITS, Following, Signal, SignalPath};
 pub use soloist::{Soloist, SoloistProblem, SoloistState, SoloistStep, SoloistSwitched};
 pub use song::SongDetail;
+pub use sponsorblock::SponsorBlock;
+pub use stations::Stations;
 pub use tags::{TagState, Tags};
 pub use toast::{Outcome, Target, Toast, ToastAction, Toasts};
-pub use updates::{Channel, Release, UpdateState, Updates, updates_itself, version};
+pub use updates::{
+    Channel, Release, UpdateState, Updates, commit, start_staged, updates_itself, version,
+};
 pub use usage::Usage;
 pub use vault::CACHE_GB_RANGE;
 pub use wake::Wake;
@@ -246,6 +255,7 @@ pub struct Sonora {
     pub outputs: Entity<Outputs>,
     pub pins: Entity<Pins>,
     pub playback: Entity<Playback>,
+    pub sponsorblock: Entity<SponsorBlock>,
     /// The window that mints YouTube's proof-of-origin token. Nothing reads it; it is held so
     /// that it keeps ticking.
     pub potoken: Entity<potoken::PoToken>,
@@ -324,6 +334,15 @@ pub fn init(
         )
     });
     let outputs = cx.new(|cx| Outputs::new(settings.clone(), playback.clone(), cx));
+    let sponsorblock = cx.new(|cx| {
+        sponsorblock::SponsorBlock::new(
+            playback.clone(),
+            session.clone(),
+            settings.clone(),
+            &network,
+            cx,
+        )
+    });
     let downloads = cx.new(|cx| {
         Downloads::new(
             session.clone(),
@@ -368,7 +387,8 @@ pub fn init(
         )
     });
     let cover = cx.new(|cx| Cover::new(session.clone(), playback.clone(), io.clone(), cx));
-    let metal = cx.new(|cx| MetalDiscovery::new(session.clone(), settings.clone(), io.clone(), cx));
+    let metal =
+        cx.new(|cx| MetalDiscovery::new(session.clone(), scrobbling.clone(), io.clone(), cx));
     let empath = cx.new(|cx| Empath::new(session.clone(), io.clone(), cx));
     let drm = cx.new(|cx| Drm::new(session.clone(), io.clone(), cx));
     let soloist = cx.new(|cx| Soloist::new(session.clone(), io.clone(), cx));
@@ -432,6 +452,7 @@ pub fn init(
     );
 
     cx.set_global(Sonora {
+        sponsorblock,
         session,
         control,
         cover,

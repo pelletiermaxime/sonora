@@ -6,7 +6,7 @@ use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Div, ElementId, Entity, FocusHandle, Pixels, Render, ScrollHandle,
-    SharedString, Task, Window, canvas, div, px, svg,
+    SharedString, Subscription, Task, Window, canvas, div, px,
 };
 use i18n::{Language, t};
 use music::SignInPrompt;
@@ -16,12 +16,12 @@ use state::{
     Sleep, Soloist, Sonora,
 };
 use ui::{
-    ActiveTheme as _, Card, Deck, Dismiss, Input, Lazy, Popovers, Scrollbar, ScrubberState,
-    Vacancy, faint, snapped, upper,
+    Activate, ActiveTheme as _, Card, Deck, Dismiss, Input, Lazy, Popovers, Scrollbar,
+    ScrubberState, SelectNext, SelectPrevious, Vacancy, snapped,
 };
 
 use crate::chrome::{Chrome, OutputPicker};
-use crate::shared::popups::SearchPopup;
+use crate::shared::popups::{Credentials, SearchPopup};
 use crate::shared::text;
 
 mod about;
@@ -31,6 +31,7 @@ mod connect;
 mod discord;
 mod general;
 mod header;
+mod keybinds;
 mod layout;
 mod lyrics;
 mod now_playing;
@@ -56,6 +57,8 @@ const TITLE_WEIGHT: u32 = 2;
 /// The picker keys the page's render watches, shared with the rows that open them.
 const LANGUAGES: &str = "languages";
 const TYPEFACES: &str = "typefaces";
+/// The shortcut that puts the caret in the search field, whose key the field shows.
+const OPEN_FILTER: &str = "open-filter";
 /// How often the storage section measures the cache and the downloads again while its tab shows.
 const STORAGE_POLL: Duration = Duration::from_secs(2);
 
@@ -65,12 +68,14 @@ const STORAGE_POLL: Duration = Duration::from_secs(2);
 enum Slot {
     Accounts,
     LocalFolder,
+    SubsonicLibrary,
     Folders,
     Theme,
     Adaptive,
     CommunityThemes,
     Icons,
     Corners,
+    PageWidth,
     Typeface,
     Font,
     Opacity,
@@ -83,6 +88,7 @@ enum Slot {
     VisualizerAbsolute,
     PlayerBarLayout,
     PlayerBarTransparent,
+    PlayerBarTimeLeft,
     FullscreenControlsAutohide,
     OsFullscreen,
     Lyrics,
@@ -97,6 +103,7 @@ enum Slot {
     LyricsForLocal,
     Normalisation,
     Gapless,
+    SponsorBlock,
     KeepTracks,
     CacheSize,
     CacheUsage,
@@ -133,11 +140,17 @@ enum Slot {
     ArtworkForLocal,
     Scrobble(usize),
     ScrobbleProvider,
+    /// The shortcut at this place in `input::shortcuts`.
+    Keybind(usize),
+    KeybindsReset,
     Startup,
+    Provider,
     Entries,
     Language,
     Tray,
     TrayIcon,
+    NowPlayingOnFileOpen,
+    TaskbarProgress,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     ServerSideDecorations,
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -159,6 +172,7 @@ enum Slot {
     AdaptiveMenu,
     Version,
     Updates,
+    AutoUpdate,
     Channel,
     Log,
     License,
@@ -261,9 +275,8 @@ pub struct SettingsView {
     theme_variants: Option<String>,
     /// The user's theme family waiting for the user to confirm its deletion.
     deleting_theme: Option<String>,
-    server: Entity<Input>,
-    username: Entity<Input>,
-    password: Entity<Input>,
+    /// The fields of a sign-in to a server of the user's own.
+    credentials: Credentials,
     credentials_for: Option<&'static str>,
     secret: Entity<Input>,
     manual_secret: Option<(&'static str, &'static str)>,
@@ -291,6 +304,15 @@ pub struct SettingsView {
     /// session tears the old provider down and brings the new one up, which reports nothing
     /// active in between.
     chosen: Option<&'static str>,
+    /// Whether the library picker is up.
+    library_picker: bool,
+    /// The row the picker's keyboard cursor is on. `None` puts it on the choice in effect, which
+    /// is where it starts once the libraries arrive.
+    library_cursor: Option<usize>,
+    /// The option list's scroll position, moved to follow the cursor.
+    library_scroll: ScrollHandle,
+    /// The library the stored account reads, held so a render never reads the stored account.
+    selected_library: Option<music::Library>,
     languages: SearchPopup,
     typefaces: SearchPopup,
     typeface_faced: RefCell<HashSet<SharedString>>,
@@ -299,6 +321,10 @@ pub struct SettingsView {
     font_task: Option<Task<()>>,
     /// What the pages' previews keep between frames.
     previews: preview::Previews,
+    /// The shortcut, by id, whose new key the page is waiting for.
+    recording: Option<&'static str>,
+    /// Catches every key pressed while a shortcut records, before it does anything else.
+    recorder: Option<Subscription>,
 }
 
 impl SettingsView {
@@ -324,8 +350,11 @@ impl SettingsView {
             .detach();
         cx.observe(&scrobbling, |this, _, cx| this.remeasure(cx))
             .detach();
-        cx.observe(&settings, |this, _, cx| this.remeasure(cx))
-            .detach();
+        cx.observe(&settings, |this, _, cx| {
+            this.show_filter_shortcut(cx);
+            this.remeasure(cx);
+        })
+        .detach();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
         playback.update(cx, |playback, cx| playback.measure_storage(cx));
         let storage = cx.spawn(async move |this, cx| {
@@ -367,9 +396,11 @@ impl SettingsView {
             Input::new("settings-search", cx)
                 .icon("icons/search.svg")
                 .blurred()
-                .shortcut("secondary-f")
                 .clearable()
         });
+        let filter =
+            input::shown(OPEN_FILTER, settings.read(cx).keybinds()).map(SharedString::from);
+        search.update(cx, |input, cx| input.set_shortcut(filter, cx));
         cx.observe(&search, |this, input, cx| {
             let query = input.read(cx).text().trim().to_owned();
             // A search swaps the page for hits from every page, so wherever the page was
@@ -385,8 +416,7 @@ impl SettingsView {
         })
         .detach();
 
-        let connect_name =
-            cx.new(|cx| Input::new("settings-spotify-connect-custom-hint", cx).compact());
+        let connect_name = cx.new(|cx| Input::new("settings-spotify-connect-name", cx).compact());
         let custom = settings.read(cx).spotify_connect_custom_name().to_owned();
         connect_name.update(cx, |input, cx| input.set_text(custom, cx));
         cx.observe(&connect_name, |this, input, cx| {
@@ -419,6 +449,7 @@ impl SettingsView {
         let output_picker = cx.new(|cx| OutputPicker::new(outputs.clone(), popovers.clone(), cx));
         let previews = preview::Previews::new(cx);
 
+        let selected_library = session.read(cx).library();
         Self {
             session,
             _storage: storage,
@@ -429,7 +460,7 @@ impl SettingsView {
             settings,
             outputs,
             output_picker,
-            page: SettingsPage::General,
+            page: SettingsTab::General.lead(),
             search,
             query: String::new(),
             reveal: None,
@@ -445,9 +476,7 @@ impl SettingsView {
             popovers,
             theme_variants: None,
             deleting_theme: None,
-            server: cx.new(|cx| Input::new("login-server-hint", cx)),
-            username: cx.new(|cx| Input::new("login-username-hint", cx)),
-            password: cx.new(|cx| Input::new("login-password-hint", cx).masked()),
+            credentials: Credentials::new(cx),
             credentials_for: None,
             secret: cx.new(|cx| Input::new("login-cookie-hint", cx)),
             manual_secret: None,
@@ -456,8 +485,12 @@ impl SettingsView {
             grabbed: false,
             sign_in_running: false,
             chosen: None,
+            library_picker: false,
+            library_cursor: None,
+            library_scroll: ScrollHandle::new(),
+            selected_library,
             scrobbling,
-            scrobble_first: cx.new(|cx| Input::new("settings-scrobble-key", cx)),
+            scrobble_first: cx.new(|cx| Input::new("common-api-key", cx)),
             scrobble_second: cx.new(|cx| Input::new("settings-scrobble-secret", cx)),
             connect_name,
             sessions_server,
@@ -469,6 +502,8 @@ impl SettingsView {
             loading_fonts: false,
             font_task: None,
             previews,
+            recording: None,
+            recorder: None,
         }
     }
 
@@ -493,6 +528,9 @@ impl SettingsView {
                     .then_some(Reveal::Section(page)),
             };
         }
+        if self.page != page {
+            self.stop_recording(cx);
+        }
         self.page = page;
         self.popovers.close();
         self.previews.shown(page.tab());
@@ -500,16 +538,22 @@ impl SettingsView {
         if page.tab() == SettingsTab::Playback {
             self.outputs.update(cx, |outputs, cx| outputs.refresh(cx));
         }
+        if page.tab() == SettingsPage::Providers.tab() {
+            self.selected_library = self.session.read(cx).library();
+        }
         self.clear_search(cx);
         cx.notify();
     }
 
     /// Tells the previews whether settings are open, so a new opening picks a new track and a
     /// closing stops what they keep running.
-    pub(crate) fn set_open(&mut self, open: bool) {
+    pub(crate) fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         match open {
             true => self.previews.opened(),
-            false => self.previews.closed(),
+            false => {
+                self.previews.closed();
+                self.stop_recording(cx);
+            }
         }
     }
 
@@ -549,7 +593,7 @@ impl SettingsView {
     /// The groups a page shows, in order.
     fn groups(&self, page: SettingsPage, cx: &App) -> Vec<Group> {
         match page {
-            SettingsPage::Providers => self.accounts_groups(),
+            SettingsPage::Providers => self.accounts_groups(cx),
             SettingsPage::Appearance => self.appearance_groups(cx),
             SettingsPage::PlayerBar => self.player_bar_groups(),
             SettingsPage::NowPlaying => self.now_playing_groups(cx),
@@ -561,9 +605,18 @@ impl SettingsView {
             SettingsPage::Scrobbling => self.scrobbling_groups(cx),
             SettingsPage::General => self.general_groups(cx),
             SettingsPage::About => self.about_groups(),
+            SettingsPage::Keybinds => self.keybinds_groups(),
             SettingsPage::LyricsSources => self.lyrics_sources_groups(),
             SettingsPage::MusicFolders => self.music_folders_groups(),
         }
+    }
+
+    /// Draws the key that opens the search in its field, which the user may have rebound.
+    fn show_filter_shortcut(&self, cx: &mut Context<Self>) {
+        let filter =
+            input::shown(OPEN_FILTER, self.settings.read(cx).keybinds()).map(SharedString::from);
+        self.search
+            .update(cx, |input, cx| input.set_shortcut(filter, cx));
     }
 
     /// Invalidates cached block heights after data or settings change their layout.
@@ -701,6 +754,7 @@ impl SettingsView {
         let meta = match slot {
             Slot::Folders => return None,
             Slot::Startup => (t!("settings-startup"), t!("settings-startup-detail")),
+            Slot::Provider => (t!("settings-provider"), t!("settings-provider-detail")),
             Slot::Entries => (t!("settings-entries"), t!("settings-entries-detail")),
             Slot::Language => (t!("settings-language"), t!("settings-language-detail")),
             Slot::Tray => (
@@ -708,18 +762,27 @@ impl SettingsView {
                 t!("settings-close-to-tray-detail"),
             ),
             Slot::TrayIcon => (t!("settings-tray-icon"), t!("settings-tray-icon-detail")),
+            Slot::NowPlayingOnFileOpen => (
+                t!("settings-now-playing-on-file-open"),
+                t!("settings-now-playing-on-file-open-detail"),
+            ),
+            Slot::TaskbarProgress => (
+                t!("settings-taskbar-progress"),
+                t!("settings-taskbar-progress-detail"),
+            ),
             Slot::Accounts => {
                 let detail = t!("settings-accounts-detail");
                 let names = self.account_words(cx);
                 (t!("settings-accounts"), format!("{detail} {names}").into())
             }
             Slot::LocalFolder => (
-                t!("settings-local-folder"),
+                t!("settings-music-folders"),
                 match self.session.read(cx).local_paths().is_empty() {
                     true => t!("settings-local-folder-empty"),
                     false => SharedString::default(),
                 },
             ),
+            Slot::SubsonicLibrary => (t!("settings-subsonic-library"), SharedString::default()),
             Slot::Theme => (t!("settings-theme"), t!("settings-theme-detail")),
             Slot::Adaptive => (t!("settings-adaptive"), t!("settings-adaptive-detail")),
             Slot::CommunityThemes => (
@@ -740,6 +803,10 @@ impl SettingsView {
                 t!("settings-player-bar-transparent"),
                 t!("settings-player-bar-transparent-detail"),
             ),
+            Slot::PlayerBarTimeLeft => (
+                t!("settings-player-bar-time-left"),
+                t!("settings-player-bar-time-left-detail"),
+            ),
             Slot::VisualizerScreens => (
                 t!("settings-visualizer-screens"),
                 t!("settings-visualizer-screens-detail"),
@@ -752,10 +819,14 @@ impl SettingsView {
             Slot::Opacity => (t!("settings-opacity"), t!("settings-opacity-detail")),
             Slot::WindowBlur => (
                 t!("settings-blur-window"),
-                t!("settings-blur-window-detail"),
+                match ui::COMPOSITOR_OPACITY {
+                    true => t!("settings-blur-window-compositor-detail"),
+                    false => t!("settings-blur-window-detail"),
+                },
             ),
             Slot::Blur => (t!("settings-blur"), t!("settings-blur-detail")),
             Slot::Corners => (t!("settings-corners"), t!("settings-corners-detail")),
+            Slot::PageWidth => (t!("settings-page-width"), t!("settings-page-width-detail")),
             Slot::FullscreenControlsAutohide => (
                 t!("settings-fullscreen-controls-autohide"),
                 t!("settings-fullscreen-controls-autohide-detail"),
@@ -820,14 +891,18 @@ impl SettingsView {
                 t!("settings-normalisation-detail"),
             ),
             Slot::Gapless => (t!("settings-gapless"), t!("settings-gapless-detail")),
+            Slot::SponsorBlock => (
+                t!("settings-sponsorblock"),
+                t!("settings-sponsorblock-detail"),
+            ),
             Slot::KeepTracks => (
                 t!("settings-keep-tracks"),
                 t!("settings-keep-tracks-detail"),
             ),
             Slot::CacheSize => (t!("settings-cache-size"), t!("settings-cache-size-detail")),
-            Slot::CacheUsage => (t!("settings-cache-used"), t!("settings-cache-used-detail")),
+            Slot::CacheUsage => (t!("settings-space-used"), t!("settings-cache-used-detail")),
             Slot::DownloadsUsage => (
-                t!("settings-downloads-used"),
+                t!("settings-space-used"),
                 t!("settings-downloads-used-detail"),
             ),
             Slot::OfflineMode => (
@@ -899,10 +974,16 @@ impl SettingsView {
                 t!("settings-lyrics-for-local-files"),
                 t!("settings-lyrics-for-local-files-detail"),
             ),
-            Slot::SpotifyConnect => (
-                t!("settings-spotify-connect"),
-                t!("settings-spotify-connect-detail"),
-            ),
+            Slot::SpotifyConnect => match connect::jellyfin(cx) {
+                true => (
+                    t!("settings-jellyfin-remote"),
+                    t!("settings-jellyfin-remote-detail"),
+                ),
+                false => (
+                    t!("settings-spotify-connect"),
+                    t!("settings-spotify-connect-detail"),
+                ),
+            },
             Slot::SpotifyConnectName => (
                 t!("settings-spotify-connect-name"),
                 t!("settings-spotify-connect-name-detail"),
@@ -913,7 +994,7 @@ impl SettingsView {
             ),
             Slot::SessionsButton => (t!("settings-sessions-button"), SharedString::default()),
             Slot::SessionsOfficial => (t!("settings-sessions-official"), SharedString::default()),
-            Slot::SessionsServer => (t!("settings-sessions-server"), SharedString::default()),
+            Slot::SessionsServer => (t!("common-server-address"), SharedString::default()),
             Slot::Discord => (t!("settings-discord"), t!("settings-discord-detail")),
             Slot::DiscordName => (
                 t!("settings-discord-name"),
@@ -949,10 +1030,16 @@ impl SettingsView {
             ),
             Slot::Scrobble(index) => self.scrobble_meta(index, cx)?,
             Slot::ScrobbleProvider => self.scrobble_provider_meta(cx)?,
+            Slot::Keybind(index) => self.keybind_meta(index, cx)?,
+            Slot::KeybindsReset => (t!("keybinds-reset-all"), SharedString::default()),
             Slot::Version => (t!("settings-version"), t!("settings-version-detail")),
             Slot::Updates => (
                 t!("settings-check-updates"),
                 t!("settings-check-updates-detail"),
+            ),
+            Slot::AutoUpdate => (
+                t!("settings-auto-update"),
+                t!("settings-auto-update-detail"),
             ),
             Slot::Channel => (
                 t!("settings-update-channel"),
@@ -969,14 +1056,18 @@ impl SettingsView {
     fn slot_element(&self, slot: Slot, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match slot {
             Slot::Startup => self.startup_row(cx),
+            Slot::Provider => self.provider_row(cx),
             Slot::Entries => self.entries_row(cx),
             Slot::Language => self.language_row(cx),
             Slot::Tray => self.tray_row(cx),
             Slot::TrayIcon => self.tray_icon_row(cx),
+            Slot::NowPlayingOnFileOpen => self.now_playing_on_file_open_row(cx),
+            Slot::TaskbarProgress => self.taskbar_progress_row(cx),
             Slot::Accounts => div().into_any_element(),
             Slot::LocalFolder => self.local_folder_row(cx),
+            Slot::SubsonicLibrary => self.subsonic_library_row(cx),
             Slot::Folders => self.folders(cx),
-            Slot::Theme | Slot::Icons | Slot::Corners => div().into_any_element(),
+            Slot::Theme | Slot::Icons | Slot::Corners | Slot::PageWidth => div().into_any_element(),
             Slot::Adaptive => self.adaptive_row(cx),
             Slot::CommunityThemes => self.community_themes_row(cx),
             Slot::Ambient => self.ambient_row(cx),
@@ -984,6 +1075,7 @@ impl SettingsView {
             Slot::Visualizer => div().into_any_element(),
             Slot::PlayerBarLayout => div().into_any_element(),
             Slot::PlayerBarTransparent => self.player_bar_transparent_row(cx),
+            Slot::PlayerBarTimeLeft => self.player_bar_time_left_row(cx),
             Slot::VisualizerScreens => self.visualizer_screens_row(cx),
             Slot::VisualizerAbsolute => self.visualizer_absolute_row(cx),
             Slot::Opacity => self.opacity_row(cx),
@@ -1017,6 +1109,7 @@ impl SettingsView {
             Slot::AdaptiveMenu => self.adaptive_menu_row(cx),
             Slot::Normalisation => self.playback_row(cx),
             Slot::Gapless => self.gapless_row(cx),
+            Slot::SponsorBlock => self.sponsorblock_row(cx),
             Slot::KeepTracks => self.keep_tracks_row(cx),
             Slot::CacheSize => self.cache_size_row(cx),
             Slot::CacheUsage => self.cache_usage_row(cx),
@@ -1045,7 +1138,7 @@ impl SettingsView {
             Slot::LyricsForLocal => self.lyrics_for_local_files_row(cx),
             Slot::SpotifyConnect => self.spotify_connect_row(cx),
             Slot::SpotifyConnectName => self.spotify_connect_name_row(cx),
-            Slot::SpotifyConnectCustom => self.spotify_connect_custom_row(),
+            Slot::SpotifyConnectCustom => self.spotify_connect_custom_row(cx),
             Slot::SessionsButton => self.sessions_button_row(cx),
             Slot::SessionsOfficial => self.sessions_official_row(cx),
             Slot::SessionsServer => self.sessions_server_row(cx),
@@ -1063,8 +1156,11 @@ impl SettingsView {
                 false => div().into_any_element(),
             },
             Slot::ScrobbleProvider => self.scrobble_provider_row(cx),
+            Slot::Keybind(index) => self.keybind_row(index, cx),
+            Slot::KeybindsReset => self.keybinds_reset_row(cx),
             Slot::Version => self.version_row(),
             Slot::Updates => self.updates_row(cx),
+            Slot::AutoUpdate => self.auto_update_row(cx),
             Slot::Channel => self.channel_row(cx),
             Slot::Log => self.log_row(cx),
             Slot::License => self.license_row(cx),
@@ -1080,6 +1176,7 @@ impl SettingsView {
             Slot::Theme => self.theme_cards(cx),
             Slot::Icons => self.icon_cards(window, cx),
             Slot::Corners => self.corner_cards(window, cx),
+            Slot::PageWidth => self.page_width_cards(window, cx),
             Slot::Visualizer => self.visualizer_cards(window, cx),
             Slot::PlayerBarLayout => self.player_bar_cards(window, cx),
             Slot::StreamQuality => self.quality_cards(window, cx),
@@ -1413,7 +1510,8 @@ impl Render for SettingsView {
         let dialog = taken
             || sign_in_for.is_some()
             || self.scrobble_prompt.is_some()
-            || theme_delete.is_some();
+            || theme_delete.is_some()
+            || self.library_picker;
         match (dialog, self.grabbed) {
             (true, false) => {
                 window.focus(&self.focus, cx);
@@ -1450,6 +1548,11 @@ impl Render for SettingsView {
                 cx.propagate();
             }
         }))
+        // the library picker's keyboard: arrows walk the cursor, enter chooses; a closed
+        // picker passes every one of these on untouched
+        .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.library_walk(1, cx)))
+        .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| this.library_walk(-1, cx)))
+        .on_action(cx.listener(|this, _: &Activate, _, cx| this.library_activate(cx)))
         .when_some(accounts, |this, accounts| {
             this.child(self.account_modal(accounts, cx).into_any_element())
         })
@@ -1469,24 +1572,13 @@ impl Render for SettingsView {
             this.child(self.sign_in_prompt(slug, provider, cx).into_any_element())
         })
         .when_some(theme_delete, |this, modal| this.child(modal))
+        .when(self.library_picker, |this| {
+            this.child(self.library_modal(cx).into_any_element())
+        })
     }
 }
 
 /// A group's heading: its icon, when it has one, before its name as an uppercase eyebrow.
 pub(super) fn group_heading(label: SharedString, icon: Option<&'static str>, cx: &App) -> Div {
-    let theme = cx.theme();
-
-    faint(cx)
-        .flex()
-        .items_center()
-        .gap_2()
-        .mb(theme.metrics.pad)
-        .children(icon.map(|icon| {
-            svg()
-                .path(icons::path(icon))
-                .size(theme.text(ui::Text::Small))
-                .flex_none()
-                .text_color(theme.muted_foreground)
-        }))
-        .child(upper(label))
+    ui::eyebrow_with(icon, label, cx).mb(cx.theme().metrics.pad)
 }

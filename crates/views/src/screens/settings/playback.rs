@@ -34,6 +34,9 @@ impl SettingsView {
     pub(super) fn playback_groups(&self, cx: &App) -> Vec<Group> {
         let capabilities = self.session.read(cx).capabilities();
         let mut playing = vec![Slot::Normalisation, Slot::Gapless];
+        if self.session.read(cx).provider_slug() == Some("youtube") {
+            playing.push(Slot::SponsorBlock);
+        }
         playing.extend([Slot::Sleep, Slot::StayAwake]);
         let mut groups = vec![Group::new("settings-group-playing", "icons/play.svg").rows(playing)];
         // one level is nothing to choose between, so it is stated in a row rather than offered
@@ -105,6 +108,20 @@ impl SettingsView {
         )
     }
 
+    pub(super) fn sponsorblock_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).sponsorblock();
+        self.row(
+            t!("settings-sponsorblock"),
+            Switch::new("sponsorblock", on)
+                .name(t!("settings-sponsorblock"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_sponsorblock(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// The switch that keeps played tracks on disk. Soloist streams every track and keeps its
     /// own cache, so the switch is out of use while it plays.
     pub(super) fn keep_tracks_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -140,14 +157,11 @@ impl SettingsView {
             .items_center()
             .gap_3()
             .child(
-                ui::spoken(
-                    "settings-cache-size-value",
-                    t!("settings-cache-size-value", count = current),
-                )
-                .flex_none()
-                .w(theme.metrics.cover * SLEEP_LABEL)
-                .whitespace_nowrap()
-                .text_right(),
+                ui::spoken("settings-cache-size-value", t!("unit-gb", value = current))
+                    .flex_none()
+                    .w(theme.metrics.cover * SLEEP_LABEL)
+                    .whitespace_nowrap()
+                    .text_right(),
             )
             .child(
                 div()
@@ -158,7 +172,7 @@ impl SettingsView {
                     .child(
                         Scrubber::new(&self.cache, fraction)
                             .name(t!("settings-cache-size"))
-                            .value(t!("settings-cache-size-value", count = current))
+                            .value(t!("unit-gb", value = current))
                             .colors(
                                 theme.progress_bar,
                                 theme.muted_foreground.opacity(0.3),
@@ -471,7 +485,7 @@ impl SettingsView {
         let removable = self.soloist.read(cx).installed()
             && matches!(state, SoloistState::Off | SoloistState::Ready(_));
         let note = match &state {
-            SoloistState::Looking => t!("settings-soloist-looking"),
+            SoloistState::Looking => t!("settings-looking"),
             SoloistState::Off => t!("settings-soloist-off"),
             SoloistState::Setup(_) => t!("settings-soloist-setting-up"),
             SoloistState::Ready(build) => {
@@ -552,7 +566,7 @@ impl SettingsView {
 /// Shared by the row and its search entry.
 pub(super) fn widevine_copy(state: &CdmState) -> (&'static str, &'static str) {
     match state {
-        CdmState::Looking => ("settings-widevine-detail", "settings-widevine-looking"),
+        CdmState::Looking => ("settings-widevine-detail", "settings-looking"),
         CdmState::Ready(Origin::Configured) => {
             ("settings-widevine-detail", "settings-widevine-configured")
         }
@@ -565,8 +579,8 @@ pub(super) fn widevine_copy(state: &CdmState) -> (&'static str, &'static str) {
         CdmState::Wanted | CdmState::Offered(_) => {
             ("settings-widevine-none", "settings-widevine-asking")
         }
-        CdmState::Offering => ("settings-widevine-none", "settings-widevine-fetching"),
-        CdmState::Installing => ("settings-widevine-none", "settings-widevine-installing"),
+        CdmState::Offering => ("settings-widevine-none", "settings-downloading"),
+        CdmState::Installing => ("settings-widevine-none", "settings-installing"),
         CdmState::Declined | CdmState::Missing => {
             ("settings-widevine-none", "settings-widevine-missing")
         }
@@ -695,7 +709,7 @@ pub(super) fn codec_key(codec: Option<Codec>) -> &'static str {
 
 pub(super) fn bitrate_label(bitrate: Option<u32>) -> SharedString {
     match bitrate {
-        Some(kbps) => t!("settings-stream-bitrate-value", kbps = i64::from(kbps)),
+        Some(kbps) => t!("unit-kbps", value = i64::from(kbps)),
         None => t!("settings-stream-bitrate-unlimited"),
     }
 }

@@ -203,21 +203,24 @@ in this repository rather than asking upstream to support the custom features.
 
 | Language | Translated | Coverage |
 | --- | --- | --- |
-| English (`en-US`) | 1431/1431 | 100% |
-| Deutsch (`de`) | 1108/1431 | 77% |
-| Español (`es`) | 1106/1431 | 77% |
-| Français (`fr`) | 1107/1431 | 77% |
-| Italiano (`it`) | 1106/1431 | 77% |
-| Bahasa Indonesia (`id`) | 1106/1431 | 77% |
-| 日本語 (`ja`) | 1106/1431 | 77% |
-| Русский (`ru`) | 1207/1431 | 84% |
-| Українська (`uk`) | 1108/1431 | 77% |
-| Polski (`pl`) | 1108/1431 | 77% |
-| Čeština (`cs`) | 1106/1431 | 77% |
-| Português (Brasil) (`pt-BR`) | 1106/1431 | 77% |
-| 简体中文 (`zh-CN`) | 1106/1431 | 77% |
-| Türkçe (`tr`) | 1106/1431 | 77% |
-| Shqip (`sq`) | 1106/1431 | 77% |
+| English (`en-US`) | 1491/1491 | 100% |
+| Deutsch (`de`) | 1030/1491 | 69% |
+| Español (`es`) | 1028/1491 | 69% |
+| Français (`fr`) | 1029/1491 | 69% |
+| Italiano (`it`) | 1028/1491 | 69% |
+| Bahasa Indonesia (`id`) | 1332/1491 | 89% |
+| 日本語 (`ja`) | 1028/1491 | 69% |
+| 한국어 (`ko`) | 1342/1491 | 90% |
+| Русский (`ru`) | 1129/1491 | 76% |
+| Українська (`uk`) | 1030/1491 | 69% |
+| Polski (`pl`) | 1030/1491 | 69% |
+| Čeština (`cs`) | 1028/1491 | 69% |
+| Português (Brasil) (`pt-BR`) | 1342/1491 | 90% |
+| Português (Portugal) (`pt-PT`) | 1028/1491 | 69% |
+| 简体中文 (`zh-CN`) | 1028/1491 | 69% |
+| Türkçe (`tr`) | 1338/1491 | 90% |
+| Shqip (`sq`) | 1028/1491 | 69% |
+| Tiếng Việt (`vi`) | 1250/1491 | 84% |
 
 <!-- i18n:end -->
 

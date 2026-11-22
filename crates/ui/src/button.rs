@@ -4,16 +4,15 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, HoverListenerMode, Hsla, Interactivity,
-    MouseButton, Pixels, SharedString, Stateful, StyleRefinement, Svg, TextStyleRefinement,
-    Transformation, Window, canvas, div, point, px, radians, relative, size, svg,
+    AnyElement, App, ClickEvent, Div, ElementId, FontWeight, HoverListenerMode, Hsla,
+    Interactivity, MouseButton, Pixels, SharedString, Stateful, StyleRefinement, Svg,
+    TextStyleRefinement, Transformation, Window, canvas, div, point, px, radians, relative, size,
+    svg,
 };
 
 use crate::glass::{GLASS_BLUR, blurring, frost};
 use crate::metrics::{Text, text_width};
-use crate::motion::{
-    Glow, LIT_HOVER, PRESS_SCALE, Springs, Sprung, glow_fill, pressing, solid_fill,
-};
+use crate::motion::{Glow, PRESS_SCALE, Springs, Sprung, glow_fill, pressing, solid_fill};
 use crate::panel::Side;
 use crate::theme::ActiveTheme as _;
 use crate::tooltip::{Perch, Tipped as _};
@@ -32,6 +31,9 @@ pub const SMALL_INSET: Pixels = px(8.);
 /// A regular button's side padding and the space between its icon and its label.
 const INSET: Pixels = px(12.);
 const GAP: Pixels = px(6.);
+/// A large button's side padding and the space between its icon and its label.
+const LARGE_INSET: Pixels = px(16.);
+const LARGE_GAP: Pixels = px(8.);
 const ICON: Pixels = px(16.);
 const BORDER: Pixels = px(1.);
 /// How small a swapped icon starts as it pops in.
@@ -101,6 +103,8 @@ pub struct Button {
     trailing: Option<SharedString>,
     variant: Variant,
     small: bool,
+    /// Whether the button stands as tall as a text field, as the answers of a dialog do.
+    large: bool,
     disabled: bool,
     selected: bool,
     /// Whether the menu or panel the button opens is showing, `None` for a button that opens
@@ -116,6 +120,8 @@ pub struct Button {
     backgroundless: bool,
     hoverless: bool,
     frosted: bool,
+    /// Whether the button keeps its size when pressed.
+    steady: bool,
     turn: f32,
     /// Whether a swapped icon fades into the one it replaces in place, with no pop.
     blend: bool,
@@ -149,6 +155,7 @@ impl Button {
             trailing: None,
             variant: Variant::Ghost,
             small: false,
+            large: false,
             disabled: false,
             selected: false,
             expanded: None,
@@ -159,6 +166,7 @@ impl Button {
             backgroundless: false,
             hoverless: false,
             frosted: false,
+            steady: false,
             turn: 0.,
             blend: false,
             belt: None,
@@ -268,6 +276,22 @@ impl Button {
         self
     }
 
+    /// Makes the button as tall as a text field, with a heavier label, for the answers of a
+    /// dialog and the buttons of a form.
+    pub fn large(mut self) -> Self {
+        self.large = true;
+        self
+    }
+
+    /// Makes the button one of a dialog's answers: as tall as a text field, with a ghost
+    /// answer outlined so it still reads as a button beside the main one.
+    pub(crate) fn answer(mut self) -> Self {
+        if matches!(self.variant, Variant::Ghost) {
+            self.variant = Variant::Outline;
+        }
+        self.large()
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -287,8 +311,8 @@ impl Button {
     }
 
     /// Fills the button with `color` while `lit`, for a row that marks where the app is. Under
-    /// the pointer alone the button takes `LIT_HOVER` of that fill. Either comes on at once and
-    /// fades out the way a hover does. It changes nothing for screen readers.
+    /// the pointer alone it takes the theme's `table_hover`, the hover every row shares. Either
+    /// comes on at once and fades out the way a hover does. It changes nothing for screen readers.
     pub fn lit(mut self, lit: bool, color: Hsla) -> Self {
         self.lit = Some((lit, color));
         self
@@ -340,6 +364,13 @@ impl Button {
 
     pub fn hoverless(mut self) -> Self {
         self.hoverless = true;
+        self
+    }
+
+    /// Keeps the button at its size when pressed, for a trigger whose menu opens on the press
+    /// and would otherwise rise over a button still springing back.
+    pub fn steady(mut self) -> Self {
+        self.steady = true;
         self
     }
 
@@ -448,6 +479,7 @@ impl RenderOnce for Button {
             trailing,
             variant,
             small,
+            large,
             disabled,
             selected,
             expanded,
@@ -458,6 +490,7 @@ impl RenderOnce for Button {
             backgroundless,
             hoverless,
             frosted,
+            steady,
             turn,
             blend,
             belt,
@@ -573,8 +606,9 @@ impl RenderOnce for Button {
         };
         // The reserved slot's width, and how wide the label shown in it sets.
         let reserved = (!reserve.is_empty()).then(|| {
-            let size = small.then(|| TextStyleRefinement {
-                font_size: Some(theme.text(Text::Label).into()),
+            let size = (small || large).then(|| TextStyleRefinement {
+                font_size: small.then(|| theme.text(Text::Label).into()),
+                font_weight: large.then_some(FontWeight::MEDIUM),
                 ..Default::default()
             });
             window.with_text_style(size, |window| {
@@ -591,10 +625,12 @@ impl RenderOnce for Button {
                 (slot, shown)
             })
         });
-        let (height, padding, gap) = match small {
-            true => (theme.metrics.control_small, SMALL_INSET, px(4.)),
-            false => (theme.metrics.control, INSET, GAP),
+        let (height, padding, gap) = match (small, large) {
+            (true, _) => (theme.metrics.control_small, SMALL_INSET, px(4.)),
+            (false, true) => (theme.metrics.field, LARGE_INSET, LARGE_GAP),
+            (false, false) => (theme.metrics.control, INSET, GAP),
         };
+        let weight = large.then_some(FontWeight::MEDIUM);
         let (hover, active) = match interactive {
             true => (palette.hover, palette.active),
             false => (None, None),
@@ -618,7 +654,11 @@ impl RenderOnce for Button {
                 false => style,
             });
         }
-        let glow_color = lit.map(|(_, color)| color).or(hover_fill);
+        let glow_color = match lit {
+            Some((true, color)) => Some(color),
+            Some((false, _)) => Some(theme.table_hover),
+            None => hover_fill,
+        };
         let tracked = interactive && !hoverless && glow_color.is_some();
         let pressed = state_style(active, pressed, frosting);
         let overrides = std::mem::take(base.style());
@@ -627,6 +667,7 @@ impl RenderOnce for Button {
             if small {
                 text.font_size = Some(theme.text(Text::Label).into());
             }
+            text.font_weight = weight;
             text.refine(&overrides.text);
             let label =
                 window.with_text_style(Some(text), |window| text_width(label.clone(), window));
@@ -650,15 +691,9 @@ impl RenderOnce for Button {
             if !tracked {
                 shape.glow.hover(false);
             }
-            // A lit button marks where the app is, so the pointer alone lights it only part of
-            // the way.
-            let hover = match lit {
-                Some(_) => LIT_HOVER,
-                None => 1.,
-            };
             let glow = shape
                 .glow
-                .peaked(lit.is_some_and(|(on, _)| on), hover, window, cx);
+                .peaked(lit.is_some_and(|(on, _)| on), 1., window, cx);
             if natural.is_none() {
                 shape.width = None;
             }
@@ -778,6 +813,7 @@ impl RenderOnce for Button {
             })
             .text_color(foreground)
             .when(small, |this| this.text_size(theme.text(Text::Label)))
+            .when_some(weight, |this, weight| this.font_weight(weight))
             .when_some(palette.background, |this, background| this.bg(background))
             .when(selected && !backgroundless, |this| {
                 this.bg(selected_background)
@@ -976,7 +1012,7 @@ impl RenderOnce for Button {
                 })
             });
 
-        let mut button = match interactive {
+        let mut button = match interactive && !steady {
             true => pressing(button, &id, PRESS_SCALE, window, cx),
             false => button,
         };

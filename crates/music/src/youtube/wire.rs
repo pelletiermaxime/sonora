@@ -111,6 +111,7 @@ pub fn playlist(source: ytmusic::Playlist, owned: bool, public: bool) -> Playlis
         cover: cover(&source.thumbnails),
         track_count: source.track_count.unwrap_or(0),
         modified_at: None,
+        read_only: false,
     }
 }
 
@@ -161,6 +162,7 @@ pub fn artist(source: ytmusic::Artist) -> Artist {
         banner: None,
         biography: source.description,
         monthly_listeners: None,
+        followers: None,
         top_tracks,
         albums,
     }

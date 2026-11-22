@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use futures::future::BoxFuture;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
+use logic::station::{self, unheard};
 use music::connect::{self, Command, Repeat};
 use music::vault::Vault;
 use music::{
@@ -67,6 +68,10 @@ use crate::{
 
 const POSITION_INTERVAL: Duration = Duration::from_millis(500);
 const CLOCK_SETTLE: Duration = Duration::from_secs(1);
+/// How far a position report may be from the clock and still be eased in. A report further off
+/// means the clock was wrong rather than drifting, as when an engine started somewhere other
+/// than where it said, so the clock jumps to it.
+const CLOCK_JUMP: Duration = Duration::from_secs(2);
 /// Position reports that can still arrive from before a seek: one already in the channel and
 /// one for a packet decoded before the engine read the command. A successful seek keeps the
 /// engine busy, so more than this while one is in flight means it never left the old position.
@@ -93,22 +98,22 @@ const THROTTLE_CAP: Duration = Duration::from_secs(30);
 /// How many refusals in a row a track is retried through before it is held paused until play.
 const THROTTLE_LIMIT: u8 = 6;
 const RESUME_STEP: Duration = Duration::from_secs(5);
+/// How far one volume notch moves the level, as a share of full volume. The volume wheel and the
+/// volume keys both take it, so the two agree.
+pub const VOLUME_STEP: f32 = 0.05;
+/// How far the seek keys move through the track.
+const SEEK_STEP: Duration = Duration::from_secs(5);
 /// How long a pause may last before play reloads the track instead of resuming the engine. What
 /// an engine holds goes stale while paused, and resuming it plays out the queued audio and then
 /// reports the track as ended. Apple's license asks for renewal 13 minutes after it is issued,
 /// and that clock starts at the load rather than the pause, so this leaves room for a long track.
 const STALE_PAUSE: Duration = Duration::from_secs(5 * 60);
 const TAPER_DB: f32 = 50.;
+/// A level this low counts as muted, matching the player's volume button.
+const MUTE_THRESHOLD: f32 = 0.001;
+/// The level a mute button restores when the volume was already zero.
+const DEFAULT_UNMUTE_VOLUME: f32 = 0.7;
 const SIMILAR_LIMIT: usize = 20;
-
-/// How few tracks may be left to play before radio asks for the next batch of suggestions.
-/// Asking this early keeps the wait for the station off the gap between two tracks.
-const RADIO_LOOKAHEAD: usize = 10;
-
-/// How many continuations in a row may bring nothing the queue has not heard before the station
-/// is dropped. An empty stretch lands with the queue still short, which asks for the next one
-/// straight away, so a provider serving the same tracks over would otherwise never be let go of.
-const STATION_DRY_LIMIT: u8 = 3;
 
 /// How many unreadable files a toast names before it cuts the list short.
 const LISTED_FILES: usize = 5;
@@ -181,16 +186,24 @@ impl LiveClock {
         self.settle = CLOCK_SETTLE.as_secs_f64();
     }
 
-    /// Folds a reported position in without a jump.
+    /// Folds a reported position in without a jump, unless it is more than `CLOCK_JUMP` off.
     fn correct(&mut self, toward: Duration) {
         self.correct_at(toward, Instant::now());
     }
 
     fn correct_at(&mut self, toward: Duration, now: Instant) {
         let shown = self.at(now);
-        self.base = shown;
         self.since = Some(now);
-        self.correction = signed_gap(toward, shown);
+        let gap = signed_gap(toward, shown);
+        // Eased in, a gap of a minute would hold the clock nearly still for that minute.
+        if gap.abs() > CLOCK_JUMP.as_secs_f64() {
+            self.base = toward;
+            self.correction = 0.;
+            self.settle = CLOCK_SETTLE.as_secs_f64();
+            return;
+        }
+        self.base = shown;
+        self.correction = gap;
         // A negative correction is spread over longer than the discrepancy itself, which keeps
         // the clock moving forward while it converges instead of ever snapping back.
         self.settle = CLOCK_SETTLE.as_secs_f64() + self.correction.abs();
@@ -296,6 +309,63 @@ pub enum PlaybackEvent {
     Seeked,
 }
 
+/// Remembers the level silenced by a temporary mute, without saving it as a volume preference.
+#[derive(Default)]
+struct MuteMemory {
+    restore: Option<f32>,
+    target: Option<String>,
+}
+
+impl MuteMemory {
+    /// Returns a temporary volume change for a mute request, preserving the first level silenced.
+    fn change(&mut self, muted: bool, level: f32, target: Option<String>) -> Option<f32> {
+        if self.restore.is_some() && self.target != target {
+            self.forget();
+        }
+        if muted {
+            return match level > MUTE_THRESHOLD {
+                true => {
+                    self.restore = Some(level);
+                    self.target = target;
+                    Some(0.)
+                }
+                false => None,
+            };
+        }
+        match level > MUTE_THRESHOLD {
+            true => {
+                self.forget();
+                None
+            }
+            false => {
+                let restore = self.restore.take().unwrap_or(DEFAULT_UNMUTE_VOLUME);
+                self.target = None;
+                Some(restore)
+            }
+        }
+    }
+
+    /// Forgets the saved level when a volume change comes from another control.
+    fn volume_changed(&mut self) {
+        self.forget();
+    }
+
+    /// Forgets a mute restore level when its device reports a non-silent volume.
+    fn reported_volume(&mut self, device: &str, level: f32) {
+        if self.restore.is_some()
+            && self.target.as_deref() == Some(device)
+            && level > MUTE_THRESHOLD
+        {
+            self.forget();
+        }
+    }
+
+    fn forget(&mut self) {
+        self.restore = None;
+        self.target = None;
+    }
+}
+
 /// A one-shot request to pause after wall-clock time or when the current track ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sleep {
@@ -364,14 +434,29 @@ impl Origin {
         self
     }
 
+    /// Whether `load` can fetch this collection from its provider. Local files are listed only
+    /// by the library, which starts them from its own table.
+    fn fetched(&self) -> bool {
+        !matches!(self.whence, Whence::Local)
+    }
+
     /// Loads the collection once for playback or queue placement, retaining radio continuation.
-    pub(crate) async fn load(&self, client: &dyn MusicApi) -> Result<(Vec<Track>, Option<String>)> {
+    /// When `stations` is false the provider cannot seed a radio, so a song collection is just
+    /// the track itself.
+    pub(crate) async fn load(
+        &self,
+        client: &dyn MusicApi,
+        stations: bool,
+    ) -> Result<(Vec<Track>, Option<String>)> {
         let tracks = match self.whence {
             Whence::Album => client.album_tracks(&self.id).await?,
             Whence::Playlist => client.playlist_tracks(&self.id).await?,
             Whence::Artist => client.artist_tracks(&self.id).await?,
             Whence::Saved => client.saved_tracks().await?,
             Whence::Radio => {
+                if !stations {
+                    return Ok((vec![client.track(&self.id).await?], None));
+                }
                 let (mut tracks, next) = client.track_radio(&self.id, None).await?;
                 tracks.retain(|track| track.playable);
                 return Ok((tracks, next));
@@ -397,16 +482,50 @@ impl From<&Pin> for Origin {
             PinKind::Playlist => Origin::playlist(pin.id.clone()),
             PinKind::Artist => Origin::artist(pin.id.clone()),
             PinKind::Song => Origin::radio(pin.id.clone()),
+            PinKind::Liked => Origin::saved(),
         };
         origin.named(pin.title.clone())
     }
 }
 
-/// A station the queue was started from, and the continuation its next stretch is fetched with.
+/// A station the queue was started from: the collection its tracks are tagged with, and the
+/// continuation its next stretch is fetched with.
 #[derive(Clone, PartialEq)]
 struct Station {
     origin: Origin,
-    next: String,
+    rest: station::Station,
+}
+
+impl Station {
+    /// The station of `origin`, a radio, that the provider continues at `next`.
+    fn of(origin: Origin, next: String) -> Self {
+        Self {
+            rest: station::Station::new(origin.id.clone(), next),
+            origin,
+        }
+    }
+}
+
+/// Where files dropped on the queue go: `gap` upcoming tracks in, before the track whose queue
+/// uid is `before`. The uid wins once the files are read, since the queue may have moved on.
+struct DropAt {
+    gap: usize,
+    before: Option<String>,
+}
+
+impl DropAt {
+    /// The gap to use now. Files dropped before a track that has since started or played go to
+    /// the front of what is upcoming, and the recorded gap stands when the track is gone.
+    fn resolve(&self, queue: &Queue) -> usize {
+        let Some(before) = &self.before else {
+            return self.gap;
+        };
+        match queue.position(before) {
+            Some(crate::QueuePosition::Upcoming(at)) => at,
+            Some(crate::QueuePosition::Current | crate::QueuePosition::Past(_)) => 0,
+            None => self.gap,
+        }
+    }
 }
 
 /// A file handed in from the OS that could not be read as a track.
@@ -429,6 +548,11 @@ impl Unread {
     }
 }
 
+/// Notified on every position report, from the engine here or from the device being steered,
+/// in place of `Playback`. It holds nothing; an observer reads the time from `Playback`, and
+/// anything that draws or counts the position observes both.
+pub struct PositionTick;
+
 /// Everything the UI knows about what is playing, and the only thing that drives an engine.
 /// Holds one engine for the streaming provider and one for local files, a `Queue` for what
 /// comes next, and a clock for the position between the engine's reports. Views act through
@@ -438,6 +562,8 @@ pub struct Playback {
     /// The last position the engine reported, or the one asked of it.
     position: Duration,
     clock: LiveClock,
+    /// Notified on each position report, which notifies nothing else.
+    ticks: Entity<PositionTick>,
     track: Option<Track>,
     engine: Option<Box<dyn Player>>,
     local_engine: Option<Box<dyn Player>>,
@@ -445,6 +571,7 @@ pub struct Playback {
     queue: Entity<Queue>,
     settings: Entity<AppSettings>,
     level: f32,
+    mute: MuteMemory,
     /// The level the volume slider is being dragged to, heard and shown but not yet saved.
     sliding: Option<f32>,
     normalisation: bool,
@@ -541,7 +668,11 @@ pub struct Playback {
     stored: Duration,
     sleep: Option<Sleep>,
     sleep_task: Option<Task<()>>,
-    open: Option<Task<()>>,
+    /// The task still reading files, which the next batch waits for.
+    pending_open: Option<Task<()>>,
+    /// Set while the files of an open have not yet started anything, so the first readable
+    /// batch of the burst plays even when it arrives as a tail.
+    opening: bool,
     /// The device network, asked whether another device has playback to steer.
     devices: Option<WeakEntity<Devices>>,
     /// Whether the call being carried out is this app's own doing, which never steers.
@@ -552,6 +683,9 @@ pub struct Playback {
     /// How many tracks played out to their end, which a Sonora Session tells apart from the
     /// listener moving on.
     ends: u64,
+    /// Where the music of the track with this id starts after a section SponsorBlock skips from
+    /// its opening. The previous button counts its restart window from there.
+    lead_in: Option<(String, Duration)>,
 }
 
 impl EventEmitter<PlaybackEvent> for Playback {}
@@ -643,6 +777,7 @@ impl Playback {
             state: PlaybackState::Idle,
             position: Duration::ZERO,
             clock: LiveClock::new(),
+            ticks: cx.new(|_| PositionTick),
             track: None,
             engine: None,
             local_engine: None,
@@ -650,6 +785,7 @@ impl Playback {
             queue,
             settings,
             level,
+            mute: MuteMemory::default(),
             sliding: None,
             normalisation,
             gapless,
@@ -699,11 +835,13 @@ impl Playback {
             stored: Duration::ZERO,
             sleep: None,
             sleep_task: None,
-            open: None,
+            pending_open: None,
+            opening: false,
             devices: None,
             local: false,
             seeks: 0,
             ends: 0,
+            lead_in: None,
         };
         // Start the local engine at startup so files can play before the first scan.
         if let Some(factory) = playback.session.read(cx).local_playback() {
@@ -836,6 +974,23 @@ impl Playback {
         )
     }
 
+    /// The album or playlist the queue plays `id` from in that collection's own order, for an
+    /// engine that can show the rest of it on the account's other devices. `None` while the
+    /// queue shuffles, or when the track is not the current one or was queued on its own.
+    fn collection_for(&self, id: &str, cx: &App) -> Option<connect::Collection> {
+        let queue = self.queue.read(cx);
+        let current = queue.current()?.id.as_deref() == Some(id);
+        if !current || queue.shuffle() || queue.place().is_none() {
+            return None;
+        }
+        collection_of(queue.origin()?).filter(|collection| {
+            matches!(
+                collection,
+                connect::Collection::Album(_) | connect::Collection::Playlist(_)
+            )
+        })
+    }
+
     /// Plays a track the user picked, from its start.
     pub fn play(&mut self, track: &Track, cx: &mut Context<Self>) {
         self.load_after(track, Start::Pick, cx);
@@ -923,6 +1078,10 @@ impl Playback {
         {
             return;
         }
+        // A gapless join only ever happens inside one engine. Lining a track up in the engine
+        // the current track does not play through would join it to whatever that engine last
+        // held, and the load that follows would resume that track instead of this one.
+        let segue = segue && music::is_local_id(id) == self.local_active();
         if self
             .preloaded
             .as_ref()
@@ -1007,6 +1166,7 @@ impl Playback {
                 let Some(engine) = this.engine_for(&id) else {
                     return;
                 };
+                engine.within(this.collection_for(&id, cx).as_ref());
                 if let Err(error) = engine.load(&id, at, start == Start::Segue) {
                     let reason = crate::blamed(&error, cx);
                     this.failed(reason, cx);
@@ -1087,13 +1247,17 @@ impl Playback {
         }
     }
 
-    /// Plays `seed` now and fills the queue behind it with its radio once that arrives.
+    /// Plays `seed` now and fills the queue behind it with its radio once that arrives. An
+    /// internet radio station seeds no song radio, so it is left alone.
     pub fn play_radio(&mut self, seed: &Track, cx: &mut Context<Self>) {
         let Some(id) = seed.id.clone() else {
             return self.failed(format!("{} has no track id", seed.name), cx);
         };
         if !seed.playable {
             return self.failed(format!("{} is not available to stream", seed.name), cx);
+        }
+        if music::is_station_id(&id) {
+            return;
         }
 
         let origin = Origin::radio(id.clone()).named(seed.name.clone());
@@ -1117,10 +1281,7 @@ impl Playback {
             },
             move |this, loaded, cx| match loaded {
                 Ok((tracks, next)) if this.origin(cx) == Some(&origin) => {
-                    this.station = next.map(|next| Station {
-                        origin: origin.clone(),
-                        next,
-                    });
+                    this.station = next.map(|next| Station::of(origin.clone(), next));
                     this.queue
                         .update(cx, |queue, cx| queue.extend_context(tracks, origin, cx));
                 }
@@ -1254,23 +1415,53 @@ impl Playback {
         Some(!kept)
     }
 
-    /// Opens paths handed in from the OS (a file-association launch or hand-off). A single file
-    /// plays right away, since picking one is a request to hear it now; several play next,
-    /// right after whatever is already playing, whichever provider it came from — or start right
-    /// away if nothing is.
-    pub fn open_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    /// Opens paths handed in from the OS (a file-association launch or hand-off). They join the
+    /// end of the manual queue in the order they were given. The first batch of a burst starts
+    /// playing at once and skips what was queued by hand before it. A `tail` batch only joins,
+    /// unless no batch of the burst has started anything yet or nothing is playing.
+    pub fn open_paths(&mut self, paths: Vec<PathBuf>, tail: bool, cx: &mut Context<Self>) {
         if paths.is_empty() {
             return;
         }
-        self.resolve_paths(paths, cx);
+        self.resolve_paths(paths, None, tail, cx);
     }
 
-    /// Reads the files on the tokio runtime and plays what it could read. Files it could not read
+    /// Queues paths dropped on the queue at `gap` upcoming tracks in, or at the end of the queue.
+    pub fn enqueue_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        gap: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let gap = gap.unwrap_or(usize::MAX);
+        let before = self
+            .queue
+            .read(cx)
+            .uid(crate::QueuePosition::Upcoming(gap))
+            .map(str::to_owned);
+        self.resolve_paths(paths, Some(DropAt { gap, before }), false, cx);
+    }
+
+    /// Reads the files on the tokio runtime and plays what it could read. A later batch waits for
+    /// the one before it, so tracks reach the queue in the order they came. Files it could not read
     /// are reported on a toast, as a failure when none could be read and as a warning otherwise.
-    fn resolve_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn resolve_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        drop: Option<DropAt>,
+        tail: bool,
+        cx: &mut Context<Self>,
+    ) {
         let provider = self.session.read(cx).local_provider();
-        self.open = Some(Io::global(cx).load(
+        let previous_open = self.pending_open.take();
+        self.pending_open = Some(Io::global(cx).load(
             async move {
+                if let Some(previous) = previous_open {
+                    previous.await;
+                }
                 let mut tracks = Vec::new();
                 let mut unread = Vec::new();
                 for path in paths {
@@ -1284,16 +1475,38 @@ impl Playback {
                 }
                 anyhow::Ok((tracks, unread))
             },
-            |this, loaded, cx| match loaded {
-                Ok((mut tracks, unread)) => {
+            move |this, loaded, cx| match loaded {
+                Ok((tracks, unread)) => {
+                    if drop.is_none() && !tail {
+                        this.opening = true;
+                    }
                     report_unread(&unread, tracks.is_empty(), cx);
-                    match tracks.len() {
-                        0 => {}
-                        1 => this.locally(cx, |this, cx| {
-                            this.play_next(tracks.remove(0), cx);
-                            this.next(cx);
+                    if tracks.is_empty() {
+                        return;
+                    }
+                    match drop {
+                        Some(drop) => {
+                            let gap = drop.resolve(this.queue.read(cx));
+                            this.insert_all(tracks, gap, None, cx);
+                        }
+                        None => this.locally(cx, |this, cx| {
+                            let play = this.opening || this.track.is_none();
+                            let at = this.queue.read(cx).manual_end();
+                            let first = tracks.iter().position(|track| track.playable);
+                            this.queue.update(cx, |queue, cx| {
+                                queue.insert(tracks, None, QueuePlacement::End, cx)
+                            });
+                            if play && let Some(first) = first {
+                                this.opening = false;
+                                this.fetch = None;
+                                let track = this.queue.update(cx, |queue, cx| {
+                                    queue.select(crate::QueuePosition::Upcoming(at + first), cx)
+                                });
+                                if let Some(track) = track {
+                                    this.load_after(&track, Start::Pick, cx);
+                                }
+                            }
                         }),
-                        _ => this.enqueue_tracks(tracks, None, QueuePlacement::Next, cx),
                     }
                 }
                 Err(error) => log::warn!("playback: cannot open files: {error:#}"),
@@ -1347,12 +1560,14 @@ impl Playback {
 
     /// Whether the provider that owns `id` can seed a station. Without one there is nothing to
     /// keep a queue going, so the radio paths leave it alone rather than asking and getting
-    /// nothing back.
+    /// nothing back. An internet radio station is no song, so it never seeds one.
     fn stations(&self, id: &str, cx: &Context<Self>) -> bool {
-        self.session
-            .read(cx)
-            .capabilities_of(crate::Shelf::of(id))
-            .radio
+        !music::is_station_id(id)
+            && self
+                .session
+                .read(cx)
+                .capabilities_of(crate::Shelf::of(id))
+                .radio
     }
 
     /// Fetches tracks for the queue on the tokio runtime and places them on arrival, with a
@@ -1380,10 +1595,14 @@ impl Playback {
         };
         let id = id.to_owned();
         let from = origin.clone();
+        let stations = self.stations(&id, cx);
         self.enqueue = Some(Io::global(cx).load(
             async move {
                 match from {
-                    Some(origin) => origin.load(&*client).await.map(|(tracks, _)| tracks),
+                    Some(origin) => origin
+                        .load(&*client, stations)
+                        .await
+                        .map(|(tracks, _)| tracks),
                     None => client.track(&id).await.map(|track| vec![track]),
                 }
             },
@@ -1440,10 +1659,7 @@ impl Playback {
     /// press starts it at once. One collection is kept at a time. Asking again for the one held
     /// or the one playing does nothing.
     pub fn warm_origin(&mut self, origin: &Origin, cx: &mut Context<Self>) {
-        if !matches!(
-            origin.whence,
-            Whence::Album | Whence::Playlist | Whence::Artist | Whence::Radio
-        ) {
+        if !origin.fetched() {
             return;
         }
         if self.origin(cx) == Some(origin) || self.awaits(origin) {
@@ -1471,12 +1687,14 @@ impl Playback {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let io = Io::global(cx);
+        let stations = self.stations(&origin.id, cx);
         cx.spawn(async move |this, cx| {
             if !dwell.is_zero() {
                 cx.background_executor().timer(dwell).await;
             }
             let from = origin.clone();
-            let loaded = crate::join(io.spawn(async move { from.load(&*client).await })).await;
+            let loaded =
+                crate::join(io.spawn(async move { from.load(&*client, stations).await })).await;
             this.update(cx, |this, cx| this.collected(origin, loaded, cx))
                 .ok();
         })
@@ -1558,10 +1776,7 @@ impl Playback {
                 .update(cx, |queue, cx| queue.set_shuffle(true, cx));
         }
         let index = self.opener(&tracks, cx).unwrap_or_default();
-        let station = next.map(|next| Station {
-            origin: origin.clone(),
-            next,
-        });
+        let station = next.map(|next| Station::of(origin.clone(), next));
         if self.begin(tracks, index, Some(origin), cx) {
             self.station = station;
         }
@@ -1644,6 +1859,13 @@ impl Playback {
         }
         self.fetch = None;
         let start = self.burst();
+        // Next on the last song of a repeating queue wraps like the end of the song does
+        if self.repeat == Repeat::All && self.queue.read(cx).ahead() == 0 {
+            if let Some(track) = self.queue.update(cx, |queue, cx| queue.rewind(cx)) {
+                self.follow_after(track, start, cx);
+            }
+            return;
+        }
         self.follow_queue(start, cx);
     }
 
@@ -1692,9 +1914,18 @@ impl Playback {
     /// Asks the engine to fetch the track that plays after this one. With `segue` it is also
     /// lined up to follow gaplessly, which waits for the end because the queue can still change.
     fn preload_upcoming(&mut self, segue: bool, cx: &Context<Self>) {
-        let next = match self.repeat != Repeat::One {
-            true => self.queue.read(cx).upcoming().next().cloned(),
-            false => None,
+        let queue = self.queue.read(cx);
+        let next = match self.repeat {
+            // nothing plays after the track a sleep request ends on
+            _ if self.sleep == Some(Sleep::EndOfTrack) => None,
+            Repeat::One => None,
+            // the end of the queue wraps to its first playable song, which `advance` rewinds to
+            Repeat::All if queue.ahead() == 0 => queue
+                .past()
+                .chain(queue.current())
+                .find(|track| track.playable)
+                .cloned(),
+            _ => queue.upcoming().next().cloned(),
         };
         let Some(next) = next else {
             self.preloaded = None;
@@ -1733,13 +1964,13 @@ impl Playback {
         self.queue.read(cx).current().cloned()
     }
 
-    /// Fetches the station's next stretch once fewer than `RADIO_LOOKAHEAD` tracks are left to
+    /// Fetches the station's next stretch once fewer than `station::LOOKAHEAD` tracks are left to
     /// play, so the queue never reaches its end while the provider has more. What the queue
     /// has already heard is left out. The station is the queue itself, so it goes on whether
     /// or not radio suggestions are on; a fetch that fails drops the continuation and hands the
     /// end of the queue back to `advance` through `stranded`.
     fn continue_station(&mut self, cx: &mut Context<Self>) {
-        if self.topping.is_some() || self.queue.read(cx).ahead() >= RADIO_LOOKAHEAD {
+        if self.topping.is_some() || !station::runs_low(self.queue.read(cx).ahead()) {
             return;
         }
         let Some(station) = self.station.clone() else {
@@ -1750,8 +1981,8 @@ impl Playback {
         };
 
         let heard = self.queue.read(cx).ids();
-        let seed = station.origin.id.clone();
-        let token = station.next.clone();
+        let seed = station.rest.seed().to_owned();
+        let token = station.rest.next().to_owned();
         self.topping = Some(Io::global(cx).load(
             async move {
                 let (mut tracks, next) = client.track_radio(&seed, Some(&token)).await?;
@@ -1765,16 +1996,10 @@ impl Playback {
                 }
                 match loaded {
                     Ok((tracks, next)) => {
-                        this.dry = match tracks.is_empty() {
-                            true => this.dry.saturating_add(1),
-                            false => 0,
-                        };
-                        this.station =
-                            next.filter(|_| this.dry < STATION_DRY_LIMIT)
-                                .map(|next| Station {
-                                    origin: station.origin.clone(),
-                                    next,
-                                });
+                        this.dry = station::dry_after(this.dry, tracks.len());
+                        this.station = next
+                            .filter(|_| !station::ran_dry(this.dry))
+                            .map(|next| Station::of(station.origin.clone(), next));
                         let idle = this.track.is_none() && !this.queue.read(cx).has_next();
                         this.queue.update(cx, |queue, cx| {
                             queue.extend_context(tracks, station.origin.clone(), cx)
@@ -1808,7 +2033,7 @@ impl Playback {
     }
 
     /// Fills the suggestions from the current track's radio when radio is on and there are
-    /// none, and tops them up once fewer than `RADIO_LOOKAHEAD` tracks are left to play, so the
+    /// none, and tops them up once fewer than `station::LOOKAHEAD` tracks are left to play, so the
     /// next batch has arrived long before the queue reaches it. What is already queued is left
     /// out, and the provider's best `SIMILAR_LIMIT` of the rest are kept. A failure is shown
     /// only when `asked`, that is when the user just turned radio on, since a top-up failing
@@ -1818,7 +2043,7 @@ impl Playback {
             return;
         }
         let held = self.queue.read(cx).similar().count();
-        if held > 0 && self.queue.read(cx).upcoming().len() >= RADIO_LOOKAHEAD {
+        if held > 0 && !station::runs_low(self.queue.read(cx).upcoming().len()) {
             return;
         }
         let Some(seed) = self.seed(cx) else {
@@ -1880,9 +2105,19 @@ impl Playback {
             return;
         }
         self.repeat = repeat;
+        self.unline();
         self.settings
             .update(cx, |settings, cx| settings.set_repeat(repeat, cx));
         cx.notify();
+    }
+
+    /// Takes back the track lined up behind the current one, for a change that alters what
+    /// follows it.
+    fn unline(&mut self) {
+        self.preloaded = None;
+        if let Some(engine) = self.active_engine() {
+            engine.unline();
+        }
     }
 
     pub fn cycle_repeat(&mut self, cx: &mut Context<Self>) {
@@ -1942,7 +2177,7 @@ impl Playback {
                 Some(track) => self.load_after(&track, Start::Segue, cx),
                 None => self.segue_queue(cx),
             },
-            Repeat::All if !self.queue.read(cx).has_next() => {
+            Repeat::All if self.queue.read(cx).ahead() == 0 => {
                 self.fetch = None;
                 if let Some(track) = self.queue.update(cx, |queue, cx| queue.rewind(cx)) {
                     self.follow_after(track, Start::Segue, cx);
@@ -2041,10 +2276,34 @@ impl Playback {
     }
 
     /// Whether the previous button restarts the track rather than going back: a few seconds
-    /// in, or nothing to go back to.
+    /// past its lead-in, or nothing to go back to. A radio station cannot restart, so it always
+    /// goes back when there is somewhere to go.
     fn restarts(&self, cx: &App) -> bool {
-        self.track.is_some()
-            && (self.live_position() > RESTART_WINDOW || !self.queue.read(cx).has_previous())
+        let Some(track) = self.track.as_ref() else {
+            return false;
+        };
+        let station = track.id.as_deref().is_some_and(music::is_station_id);
+        !self.queue.read(cx).has_previous()
+            || (!station && self.live_position() > self.restart_at() + RESTART_WINDOW)
+    }
+
+    /// Where the current track's music starts, past an opening SponsorBlock skips.
+    fn restart_at(&self) -> Duration {
+        let current = self.track.as_ref().and_then(|track| track.id.as_deref());
+        self.lead_in
+            .as_ref()
+            .filter(|(id, _)| current == Some(id.as_str()))
+            .map_or(Duration::ZERO, |(_, at)| *at)
+    }
+
+    pub fn lead_in(&self) -> Option<&(String, Duration)> {
+        self.lead_in.as_ref()
+    }
+
+    /// Records where the music of the track with this id starts, so a restart lands there and
+    /// going back still works right after the opening was skipped. It notifies nothing.
+    pub fn set_lead_in(&mut self, lead_in: Option<(String, Duration)>) {
+        self.lead_in = lead_in;
     }
 
     pub fn previous(&mut self, cx: &mut Context<Self>) {
@@ -2052,7 +2311,7 @@ impl Playback {
             return;
         }
         if self.restarts(cx) {
-            return self.seek(Duration::ZERO, cx);
+            return self.seek(self.restart_at(), cx);
         }
         self.fetch = None;
         let start = self.burst();
@@ -2138,6 +2397,7 @@ impl Playback {
         let Some(engine) = self.engine_for(id) else {
             return;
         };
+        engine.within(self.collection_for(id, cx).as_ref());
         match engine.load_paused_at(id, at) {
             Ok(()) => {
                 self.resume_ready = true;
@@ -2230,6 +2490,9 @@ impl Playback {
     /// Replaces the active sleep request, dropping its timer task when cancelled or superseded.
     /// A timer that runs out while music plays pauses it and says so on a toast.
     pub fn set_sleep(&mut self, sleep: Option<Sleep>, cx: &mut Context<Self>) {
+        if sleep == Some(Sleep::EndOfTrack) {
+            self.unline();
+        }
         self.sleep = sleep;
         self.sleep_task = match sleep {
             Some(Sleep::After(after)) => Some(cx.spawn(async move |this, cx| {
@@ -2309,22 +2572,16 @@ impl Playback {
         self.has_active_playback().then(|| self.wants_playing())
     }
 
+    /// Starts `origin` once its tracks are loaded. Local files are left to the library table.
     pub fn play_origin(&mut self, origin: Origin, cx: &mut Context<Self>) {
-        match origin.whence {
-            Whence::Album | Whence::Playlist | Whence::Artist | Whence::Radio => {
-                self.gather(origin, false, cx)
-            }
-            // the table plays these
-            Whence::Saved | Whence::Local => {}
+        if origin.fetched() {
+            self.gather(origin, false, cx);
         }
     }
 
     /// Turns shuffle on and plays `origin` from a random track once its tracks are loaded.
     pub fn shuffle_origin(&mut self, origin: Origin, cx: &mut Context<Self>) {
-        if matches!(
-            origin.whence,
-            Whence::Album | Whence::Playlist | Whence::Artist | Whence::Radio
-        ) {
+        if origin.fetched() {
             self.gather(origin, true, cx);
         }
     }
@@ -2340,12 +2597,17 @@ impl Playback {
 
     /// Moves to `position`. While playing, the clock parks there until the engine reports
     /// audio from it, and a second seek meanwhile waits for the first to land. A restored track
-    /// not yet held by the engine only moves its resume point.
+    /// not yet held by the engine only moves its resume point. A radio station stays where it
+    /// is, since seeking it would replay what it sent since it was tuned in.
     pub fn seek(&mut self, position: Duration, cx: &mut Context<Self>) {
         if !self.local {
             self.seeks += 1;
         }
         if self.steer(|_| Command::Seek(position), cx) {
+            return;
+        }
+        let station = self.track.as_ref().and_then(|track| track.id.as_deref());
+        if station.is_some_and(music::is_station_id) {
             return;
         }
         if self.resume_at.is_some() {
@@ -2439,6 +2701,17 @@ impl Playback {
         &self.state
     }
 
+    /// The entity notified on every position report, which `Playback` itself is not. Observe it
+    /// as well as `Playback` to follow the position as it moves.
+    pub fn ticks(&self) -> &Entity<PositionTick> {
+        &self.ticks
+    }
+
+    /// Tells the observers of `ticks` that the position moved.
+    fn tick(&self, cx: &mut App) {
+        self.ticks.update(cx, |_, cx| cx.notify());
+    }
+
     /// The position as last reported or asked for. It only moves on events.
     pub fn position(&self) -> Duration {
         self.position
@@ -2477,12 +2750,43 @@ impl Playback {
         self.level
     }
 
+    /// Whether the shown playback device is silent.
+    pub fn muted(&self, cx: &App) -> bool {
+        self.shown_volume(cx) <= MUTE_THRESHOLD
+    }
+
+    /// Toggles mute using the volume of the current playback device.
+    pub fn toggle_muted(&mut self, cx: &mut Context<Self>) {
+        self.set_muted(!self.muted(cx), cx);
+    }
+
+    /// Mutes or restores the shown playback device without saving the temporary level.
+    pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
+        let target = self.steered(cx).map(|remote| remote.device.id);
+        let current = self.shown_volume(cx);
+        let Some(level) = self.mute.change(muted, current, target) else {
+            return;
+        };
+        self.apply_volume(level, false, cx);
+    }
+
+    /// Updates mute memory when the steered device reports its volume.
+    pub(crate) fn reported_steered_volume(&mut self, device: &str, level: f32) {
+        self.mute.reported_volume(device, level);
+    }
+
     /// The gain the volume applies, 1 at full volume.
     pub fn volume_gain(&self) -> f32 {
         gain(self.level)
     }
 
     pub fn set_volume(&mut self, level: f32, cx: &mut Context<Self>) {
+        self.mute.volume_changed();
+        self.apply_volume(level, true, cx);
+    }
+
+    /// Changes the volume on the shown device and optionally remembers it as the preference.
+    fn apply_volume(&mut self, level: f32, remember: bool, cx: &mut Context<Self>) {
         self.sliding = None;
         if let Some((devices, steered)) = self.steering(cx) {
             devices.update(cx, |devices, cx| {
@@ -2492,8 +2796,10 @@ impl Playback {
             return;
         }
         self.level = level.clamp(0., 1.);
-        self.settings
-            .update(cx, |settings, cx| settings.set_volume(self.level, cx));
+        if remember {
+            self.settings
+                .update(cx, |settings, cx| settings.set_volume(self.level, cx));
+        }
         self.apply_gain();
         cx.notify();
     }
@@ -2503,6 +2809,7 @@ impl Playback {
     /// playback. The caller repaints itself, and calls `end_volume_slide` when the slider is let go.
     pub fn slide_volume(&mut self, level: f32, cx: &App) {
         let level = level.clamp(0., 1.);
+        self.mute.volume_changed();
         self.sliding = Some(level);
         if self.steer(|_| Command::Volume(level), cx) {
             return;
@@ -2517,6 +2824,27 @@ impl Playback {
             return;
         };
         self.set_volume(level, cx);
+    }
+
+    /// Turns the volume by `steps` notches of `VOLUME_STEP` from the level shown, which is the
+    /// other device's level while one is steered.
+    pub fn nudge_volume(&mut self, steps: i8, cx: &mut Context<Self>) {
+        let level = volume_after(self.shown_volume(cx), steps);
+        self.set_volume(level, cx);
+    }
+
+    /// Moves `SEEK_STEP` forward or back through the shown track, stopping at its start and end.
+    /// Seeks the other device while one is steered, and does nothing without a track.
+    pub fn skip(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let (shown, total) = self.shown_time(cx);
+        if total.is_zero() {
+            return;
+        }
+        let at = match self.steered(cx) {
+            Some(_) => shown,
+            None => self.seek_target.unwrap_or_else(|| self.live_position()),
+        };
+        self.seek(seek_target(at, total, forward), cx);
     }
 
     /// Sends the gain for the current level to both engines.
@@ -2981,6 +3309,7 @@ impl Playback {
             BackendEvent::Unavailable { .. }
             | BackendEvent::Throttled { .. }
             | BackendEvent::Refused
+            | BackendEvent::Blocked
                 if self.resume_ready =>
             {
                 self.resume_ready = false;
@@ -3052,9 +3381,12 @@ impl Playback {
                 }
                 self.remember(false, cx);
                 self.preload_next(at, cx);
-                if failed {
-                    self.follow_up_seek(cx);
+                self.tick(cx);
+                // a report that only moves the clock reaches the observers of `ticks` alone
+                if !failed {
+                    return;
                 }
+                self.follow_up_seek(cx);
             }
             BackendEvent::Downloaded { .. } => self.preload_upcoming(false, cx),
             BackendEvent::Length { duration, .. } => {
@@ -3075,6 +3407,16 @@ impl Playback {
                 match self.sleep == Some(Sleep::EndOfTrack) {
                     true => self.doze(cx),
                     false => self.advance(ended, cx),
+                }
+            }
+            BackendEvent::SteppedBack { .. } => {
+                self.track = None;
+                self.state = PlaybackState::Idle;
+                self.position = Duration::ZERO;
+                self.clock.reset(Duration::ZERO, false);
+                cx.emit(PlaybackEvent::EndedPlayback);
+                if let Some(track) = self.queue.update(cx, |queue, cx| queue.previous(cx)) {
+                    self.load_after(&track, Start::Segue, cx);
                 }
             }
             BackendEvent::Throttled { .. } => self.throttled(cx),
@@ -3105,7 +3447,7 @@ impl Playback {
                             true => {
                                 let toast = Toast::new(Outcome::Failed, "toast-widevine-failed")
                                     .note("toast-widevine-borrowed")
-                                    .open("toast-open-settings", Target::PlaybackSettings)
+                                    .open("nav-settings", Target::PlaybackSettings)
                                     .lasting();
                                 Toasts::post(toast, cx);
                             }
@@ -3131,6 +3473,7 @@ impl Playback {
                 self.gate(cx);
                 cx.emit(PlaybackEvent::EndedPlayback);
             }
+            BackendEvent::Blocked => self.network_blocked(cx),
         }
         cx.notify();
     }
@@ -3230,6 +3573,21 @@ impl Playback {
         self.load_from(&track, at, Start::Retry, cx);
     }
 
+    /// Holds the track the provider would not load because it refuses the network the app
+    /// connects from. Every other track would fail the same way, so the queue stays put, and
+    /// pressing play tries again once the listener has changed networks.
+    fn network_blocked(&mut self, cx: &mut Context<Self>) {
+        let provider = self
+            .session
+            .read(cx)
+            .provider_name()
+            .unwrap_or("this provider")
+            .to_owned();
+        log::warn!("playback: {provider} refuses requests from this network, waiting for play");
+        Toasts::about(Outcome::Failed, "toast-network-blocked", provider, cx);
+        self.hold(self.position, cx);
+    }
+
     /// Turns down a track that has to be streamed while the network is gone. Whatever plays
     /// keeps playing, since a local file needs nothing, and only a track the user picked says
     /// so out loud: the queue moving on by itself would otherwise toast once a track.
@@ -3313,7 +3671,7 @@ impl Playback {
         };
         let toast = Toast::new(Outcome::Failed, "toast-keys-error").note(note);
         let toast = match music::soloist::supported() {
-            true => toast.lead("toast-soloist-setup", Target::PlaybackSettings, |cx| {
+            true => toast.lead("soloist-setup-title", Target::PlaybackSettings, |cx| {
                 let soloist = Sonora::global(cx).soloist.clone();
                 soloist.update(cx, |soloist, cx| soloist.begin(cx));
             }),
@@ -3328,17 +3686,6 @@ impl Playback {
         }
         cx.notify();
     }
-}
-
-/// Keeps the playable tracks that are not among `heard`, the ids a queue already holds.
-fn unheard(tracks: &mut Vec<Track>, heard: &HashSet<String>) {
-    tracks.retain(|track| {
-        track.playable
-            && track
-                .id
-                .as_ref()
-                .is_some_and(|id| !heard.contains(id.as_str()))
-    });
 }
 
 fn song_target(track: &Track) -> Option<Target> {
@@ -3421,11 +3768,27 @@ fn retire(engine: Option<Box<dyn Player>>) {
         log::warn!("playback: cannot retire the old engine off the main thread: {error}");
     }
 }
+/// The level `steps` notches of `VOLUME_STEP` from `level`, kept between silence and full volume.
+fn volume_after(level: f32, steps: i8) -> f32 {
+    (level + f32::from(steps) * VOLUME_STEP).clamp(0., 1.)
+}
+
+/// The position `SEEK_STEP` from `at` in the given direction, kept between the start of the track
+/// and its end.
+fn seek_target(at: Duration, total: Duration, forward: bool) -> Duration {
+    match forward {
+        true => at.saturating_add(SEEK_STEP).min(total),
+        false => at.saturating_sub(SEEK_STEP),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{LiveClock, gain};
+    use super::{
+        DEFAULT_UNMUTE_VOLUME, LiveClock, MuteMemory, VOLUME_STEP, gain, seek_target, volume_after,
+    };
 
     #[test]
     fn never_amplifies_past_unity() {
@@ -3456,6 +3819,40 @@ mod tests {
     fn halves_the_slider_to_the_taper_midpoint() {
         let expected = 10f32.powf(-super::TAPER_DB / 40.);
         assert!((gain(0.5) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mute_restores_the_last_volume_and_repeated_switches_are_safe() {
+        let mut mute = MuteMemory::default();
+        assert_eq!(mute.change(true, 0.62, None), Some(0.));
+        assert_eq!(mute.change(true, 0., None), None);
+        assert_eq!(mute.change(false, 0., None), Some(0.62));
+        assert_eq!(mute.change(false, 0.62, None), None);
+    }
+
+    #[test]
+    fn a_volume_change_while_muted_discards_the_stale_restore_level() {
+        let mut mute = MuteMemory::default();
+        assert_eq!(mute.change(true, 0.4, None), Some(0.));
+        mute.volume_changed();
+        assert_eq!(mute.change(false, 0.25, None), None);
+    }
+
+    #[test]
+    fn mute_handles_zero_volume_without_inventing_a_restore_level() {
+        let mut mute = MuteMemory::default();
+        assert_eq!(mute.change(true, 0., None), None);
+        assert_eq!(mute.change(false, 0., None), Some(DEFAULT_UNMUTE_VOLUME));
+    }
+
+    #[test]
+    fn mute_does_not_restore_a_different_remote_device() {
+        let mut mute = MuteMemory::default();
+        assert_eq!(mute.change(true, 0.55, Some("device-a".into())), Some(0.));
+        assert_eq!(
+            mute.change(false, 0., Some("device-b".into())),
+            Some(DEFAULT_UNMUTE_VOLUME)
+        );
     }
 
     #[test]
@@ -3493,5 +3890,42 @@ mod tests {
             assert!(sample >= previous);
             previous = sample;
         }
+    }
+
+    #[test]
+    fn volume_keys_move_by_the_wheel_step() {
+        assert!((volume_after(0.5, 1) - (0.5 + VOLUME_STEP)).abs() < 1e-6);
+        assert!((volume_after(0.5, -1) - (0.5 - VOLUME_STEP)).abs() < 1e-6);
+        assert!((volume_after(0.5, 1) - 0.55).abs() < 1e-6);
+    }
+
+    #[test]
+    fn volume_keys_stop_at_silence_and_full_volume() {
+        assert_eq!(volume_after(0.98, 1), 1.);
+        assert_eq!(volume_after(0.02, -1), 0.);
+        assert_eq!(volume_after(1., 1), 1.);
+    }
+
+    #[test]
+    fn seek_keys_move_five_seconds_each_way() {
+        let total = Duration::from_secs(100);
+        assert_eq!(
+            seek_target(Duration::from_secs(10), total, true),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            seek_target(Duration::from_secs(10), total, false),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn seek_keys_stop_at_the_start_and_end_of_the_track() {
+        let total = Duration::from_secs(100);
+        assert_eq!(
+            seek_target(Duration::from_secs(2), total, false),
+            Duration::ZERO
+        );
+        assert_eq!(seek_target(Duration::from_secs(98), total, true), total);
     }
 }

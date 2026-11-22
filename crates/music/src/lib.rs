@@ -12,6 +12,7 @@ pub mod drm;
 pub mod engine;
 pub mod equalizer;
 pub mod escape;
+pub mod jellyfin;
 pub mod kugou;
 pub mod link;
 #[cfg(test)]
@@ -20,16 +21,20 @@ pub mod local;
 pub mod lrclib;
 pub mod lyrics;
 mod models;
+mod mp4;
 pub mod musixmatch;
 pub mod netease;
+pub mod order;
 pub mod output;
 pub mod potoken;
 pub mod progress;
 mod redact;
 pub mod scrobble;
 mod sink;
+pub mod smart;
 pub mod soloist;
 mod spectrum;
+mod sponsorblock;
 pub mod spotify;
 mod stream;
 pub mod subsonic;
@@ -51,20 +56,28 @@ use jiff::fmt::temporal::DateTimeParser;
 pub use audio::Meter;
 pub use equalizer::Equalizer;
 pub use models::{
-    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, ArtistRef,
-    Contributor, CoverSize, Credit, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed,
+    Album, AlbumCatalogue, AlbumDetail, Arrival, Artist, ArtistCatalogue, ArtistProfile, ArtistRef,
+    Contributor, CoverSize, Credit, Found, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed,
     ImportedPlaylist, Lyrics, LyricsHit, LyricsLane, LyricsLine, LyricsQuery, LyricsWord,
     PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail, ReleaseType, RomanizedText,
-    SavedArtist, Track, TrackKey, TrackTags, UserDetail, UserProfile, Voice, WritingSystem,
+    SavedArtist, Station, Track, TrackKey, TrackTags, UserDetail, UserProfile, Voice,
+    WritingSystem,
 };
 pub use output::{Server as SoundServer, missing_bridge};
 pub use redact::redact;
+pub use smart::{
+    Condition, FieldKind, Operand, OperandShape, Operator, Problem, Rule, RuleGroup, RuleProblem,
+    SmartPlaylist, SmartPlaylistUpdate, SmartRules, field_kind, parse_number,
+};
 pub use spectrum::{Analyzer, Level, Listening, Spectrum, Watch};
+pub use sponsorblock::{SkipSegment, SponsorBlock};
 
 pub const LOCAL_TRACK_PREFIX: &str = "local:";
 pub const LOCAL_ALBUM_PREFIX: &str = "local-album:";
 pub const LOCAL_ARTIST_PREFIX: &str = "local-artist:";
 pub const LOCAL_PLAYLIST_PREFIX: &str = "local-playlist:";
+/// What the track id of an internet radio station starts with, ahead of the station's own id.
+pub const STATION_PREFIX: &str = "station:";
 
 /// The most recommendations a provider hands one list of an album or artist page, so a
 /// rail never asks for or draws more than this many releases or artists.
@@ -78,6 +91,12 @@ pub fn is_local_id(id: &str) -> bool {
         || id.starts_with(LOCAL_ALBUM_PREFIX)
         || id.starts_with(LOCAL_ARTIST_PREFIX)
         || id.starts_with(LOCAL_PLAYLIST_PREFIX)
+}
+
+/// Whether `id` names an internet radio station rather than a song. A station has no length,
+/// no artist and no lyrics to look up.
+pub fn is_station_id(id: &str) -> bool {
+    id.starts_with(STATION_PREFIX)
 }
 
 pub fn distinct_covers(tracks: &[Track], wanted: usize) -> Vec<String> {
@@ -125,6 +144,13 @@ pub trait MusicApi: Send + Sync {
     /// A cover url this provider handed out, at `size`. It is worked out from the url alone,
     /// so `None` means the provider cannot tell and the caller loads the album instead.
     fn cover_at(&self, _cover: &str, _size: CoverSize) -> Option<String> {
+        None
+    }
+
+    /// The provider's original-resolution url for a cover it handed out, when the url alone
+    /// names one. Only the explicit full-size cover view asks for this, so a provider that
+    /// cannot name an original keeps showing the large cover.
+    fn cover_original(&self, _cover: &str) -> Option<String> {
         None
     }
 
@@ -261,6 +287,29 @@ pub trait MusicApi: Send + Sync {
     async fn set_playlist_cover(&self, _playlist_id: &str, _image: Option<&[u8]>) -> Result<()> {
         anyhow::bail!("this provider cannot change a playlist's cover")
     }
+
+    /// Reads one playlist's smart rules and edit bookkeeping. Only a provider whose
+    /// capabilities list `smart_playlists` answers.
+    async fn smart_playlist(&self, _playlist_id: &str) -> Result<SmartPlaylist> {
+        anyhow::bail!("this provider has no smart playlists")
+    }
+
+    /// Creates a smart playlist called `name` from `rules` and answers its id. Only a
+    /// provider whose capabilities list `smart_playlists` answers.
+    async fn create_smart_playlist(&self, _name: &str, _rules: &SmartRules) -> Result<String> {
+        anyhow::bail!("this provider has no smart playlists")
+    }
+
+    /// Writes the fields `update` names to the smart playlist and answers how it reads after
+    /// the write; fields the update leaves as `None` keep their values. Only a provider whose
+    /// capabilities list `smart_playlists` answers.
+    async fn update_smart_playlist(
+        &self,
+        _playlist_id: &str,
+        _update: SmartPlaylistUpdate,
+    ) -> Result<SmartPlaylist> {
+        anyhow::bail!("this provider has no smart playlists")
+    }
     async fn add_track_to_playlist(&self, playlist_id: &str, track_id: &str) -> Result<()>;
 
     /// Adds tracks to the end of a playlist in order, and a track named twice goes in twice. A
@@ -273,6 +322,20 @@ pub trait MusicApi: Send + Sync {
         Ok(())
     }
     async fn remove_track_from_playlist(&self, playlist_id: &str, track_id: &str) -> Result<()>;
+
+    /// Puts the playlist's tracks in the order `wanted`, the tracks `playlist` answers in a new
+    /// order. `seen` is the id of every track the listener saw before they moved any, in order,
+    /// and a provider whose listing is no longer exactly that refuses, rather than land a track
+    /// somewhere the listener did not drop it. Only a provider whose capabilities list
+    /// `playlist_order` answers.
+    async fn reorder_playlist(
+        &self,
+        _playlist_id: &str,
+        _seen: &[String],
+        _wanted: &[String],
+    ) -> Result<()> {
+        anyhow::bail!("this provider cannot reorder a playlist")
+    }
 
     /// Reads the M3U or M3U8 playlist at `path` into a new playlist named after the file, for a
     /// provider whose tracks are files. Entries naming a file outside the library are left out
@@ -370,6 +433,24 @@ pub trait MusicApi: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Songs, albums, playlists and artists for `query`, which is what the search page and the
+    /// command line show. The default runs the four searches at once. A provider that can
+    /// answer every kind in one request overrides it, so a query costs one round trip.
+    async fn search_all(&self, query: &str) -> Found {
+        let (tracks, albums, playlists, artists) = futures::join!(
+            self.search(query),
+            self.search_albums(query),
+            self.search_playlists(query),
+            self.search_artists(query),
+        );
+        Found {
+            tracks,
+            albums,
+            playlists,
+            artists,
+        }
+    }
+
     async fn home(&self) -> Result<HomeFeed> {
         Ok(HomeFeed::default())
     }
@@ -397,6 +478,12 @@ pub trait MusicApi: Send + Sync {
     /// the provider allows. Defaults to none, for a provider whose genres come with covers.
     async fn genre_cover(&self, _genre_id: &str) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// The internet radio stations the account can tune in to. Only a provider with the
+    /// `stations` capability lists any.
+    async fn stations(&self) -> Result<Vec<Station>> {
+        Ok(Vec::new())
     }
 }
 
@@ -633,6 +720,11 @@ pub enum PlaybackEvent {
     Ended {
         id: Option<String>,
     },
+    /// The engine went back from `id` to the track before it, as another app of the service
+    /// asked. That track already plays, and the queue steps back to it.
+    SteppedBack {
+        id: Option<String>,
+    },
     Unavailable {
         id: Option<String>,
     },
@@ -643,6 +735,9 @@ pub enum PlaybackEvent {
     },
     Refused,
     Gated,
+    /// The provider refuses the network the app connects from, so no track will load until the
+    /// network changes.
+    Blocked,
     /// The audio output was lost or changed, so the engine is gone. `heard` is the track being
     /// heard and how far into it the output had played, when the engine knew. A restart resumes
     /// there rather than where a clock that kept running during the switch would say.
@@ -668,6 +763,7 @@ impl PlaybackEvent {
             | Self::Length { id, .. }
             | Self::Downloaded { id }
             | Self::Ended { id, .. }
+            | Self::SteppedBack { id }
             | Self::Unavailable { id, .. }
             | Self::Throttled { id } => id.as_deref(),
             Self::Signal { id, .. } => Some(id),
@@ -689,6 +785,15 @@ pub trait Player: Send + Sync {
     /// Fetches a track ahead of time so a later `load` starts at once. `segue` marks the next
     /// queue item, which a gapless engine may already line up behind the current one.
     fn preload(&self, track_id: &str, segue: bool) -> Result<()>;
+
+    /// Takes back what `preload` lined up behind the current track, as when a change of repeat
+    /// altered what follows it. An engine that cannot is left as it is.
+    fn unline(&self) {}
+
+    /// Names the collection the next `load` or `load_paused_at` plays inside, given only while
+    /// the queue follows that collection's own order. An engine whose service shows its queue
+    /// to the account's other devices plays the track there so they see what comes next.
+    fn within(&self, _collection: Option<&connect::Collection>) {}
     fn play(&self);
     fn pause(&self);
 
@@ -836,6 +941,16 @@ pub struct Capabilities {
     /// The listener can give an owned playlist a cover of their own through
     /// `set_playlist_cover`, and take it off again.
     pub playlist_covers: bool,
+    /// The listener can create a smart playlist and change an owned one's rules, through
+    /// `create_smart_playlist` and `update_smart_playlist`. Off, the rule editor stays
+    /// hidden rather than saving nowhere.
+    pub smart_playlists: bool,
+    /// The provider lists internet radio stations through `stations`, which play as tracks
+    /// whose ids start with [`STATION_PREFIX`].
+    pub stations: bool,
+    /// The listener can move tracks within an owned playlist through `reorder_playlist`,
+    /// and the provider keeps the new order.
+    pub playlist_order: bool,
     /// Played tracks can be kept in the [`vault`], so playing one again downloads nothing.
     pub keeps: bool,
     /// Tracks can be downloaded. Whether a download then plays with no network is up to the
@@ -851,12 +966,21 @@ pub struct Capabilities {
     /// one. Such a service downloads one track at a time, with no pause until it first refuses.
     /// Zero lets downloads run side by side.
     pub download_gap: Duration,
+    /// Set when the library's Songs page comes in the order its songs were added but carries
+    /// no date for each, saying which end is newest. The page then sorts by Date added through
+    /// that order and shows no Date added column. None when the songs have dates of their own
+    /// or come in some other order.
+    pub song_arrival: Option<Arrival>,
+    /// The same, for the songs of a playlist the listener owns. Anyone else's playlist keeps
+    /// the order its curator gave it.
+    pub playlist_arrival: Option<Arrival>,
 }
 
 impl Capabilities {
     /// What a full streaming service offers. Pins of the provider's own are not among them,
     /// since only Spotify and Apple Music keep any. Converting on request is not either, since
-    /// only Subsonic does it. Playlist covers are left for each provider to turn on.
+    /// only Subsonic does it. Playlist covers, order, smart playlists and stations are left for
+    /// each provider to turn on.
     pub const ALL: Self = Self {
         follow_artists: true,
         radio: true,
@@ -864,11 +988,16 @@ impl Capabilities {
         pins: false,
         transcode: false,
         playlist_covers: false,
+        smart_playlists: false,
+        stations: false,
+        playlist_order: false,
         keeps: true,
         downloads: true,
         plain_downloads: false,
         qualities: &[],
         download_gap: Duration::ZERO,
+        song_arrival: None,
+        playlist_arrival: None,
     };
 
     /// Nothing beyond listing and playing.
@@ -879,11 +1008,16 @@ impl Capabilities {
         pins: false,
         transcode: false,
         playlist_covers: false,
+        smart_playlists: false,
+        stations: false,
+        playlist_order: false,
         keeps: false,
         downloads: false,
         plain_downloads: false,
         qualities: &[],
         download_gap: Duration::ZERO,
+        song_arrival: None,
+        playlist_arrival: None,
     };
 }
 
@@ -916,7 +1050,12 @@ pub enum SignInProblem {
     Subscription,
     Region,
     Credentials,
+    /// The server did not accept the username and password typed for a new sign-in.
+    Password,
     Network,
+    /// The provider refuses the network the app connects from, as Google does for some VPN
+    /// servers. Another network gets through.
+    Blocked,
     Cancelled,
     Refused,
 }
@@ -944,7 +1083,9 @@ impl std::fmt::Display for SignInFailure {
             SignInProblem::Subscription => "the account has no active Apple Music subscription",
             SignInProblem::Region => "the account is out of its home region",
             SignInProblem::Credentials => "the stored credentials are no longer valid",
+            SignInProblem::Password => "the server did not accept that username and password",
             SignInProblem::Network => "the provider could not be reached",
+            SignInProblem::Blocked => "the provider refuses requests from this network",
             SignInProblem::Cancelled => "authorization was cancelled in the browser",
             SignInProblem::Refused => "Spotify refused the session",
         };
@@ -954,6 +1095,8 @@ impl std::fmt::Display for SignInFailure {
 
 impl std::error::Error for SignInFailure {}
 
+/// One account or profile a sign-in can go on as. The picked `id` comes back on the prompt's
+/// input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountChoice {
     pub id: String,
@@ -961,9 +1104,25 @@ pub struct AccountChoice {
     pub detail: Option<String>,
 }
 
+/// What the choices in a `SignInPrompt::Accounts` are, which decides how the picker asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountKind {
+    /// Separate accounts that one browser session is signed in to at once.
+    Session,
+    /// Profiles inside one account, such as the members of a family plan.
+    Profile,
+}
+
+/// The accounts a sign-in asks the user to pick from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountChoices {
+    pub kind: AccountKind,
+    pub accounts: Vec<AccountChoice>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInPrompt {
-    Accounts(Vec<AccountChoice>),
+    Accounts(AccountChoices),
     Code { code: String, url: String },
     Url(String),
     Secret,
@@ -1025,10 +1184,42 @@ pub struct WebSignIn {
     pub agent: Option<&'static str>,
 }
 
+/// One of the libraries a self-hosted server keeps apart, which a stored account can be limited
+/// to. It is kept beside the account so a launch can name the choice before the server is asked,
+/// and so a library the server no longer lists is still reported by name rather than silently
+/// widened back to everything.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Library {
+    pub id: i64,
+    /// The server's name for it, when it has one.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 #[async_trait]
 pub trait MusicProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn slug(&self) -> &'static str;
+
+    /// Whether a stored account can be limited to one library of its server. Only such a
+    /// provider answers the other library calls.
+    fn has_libraries(&self) -> bool {
+        false
+    }
+    /// The library the stored account is limited to, or `None` when it reads the whole server.
+    /// It reads what is stored and asks the server nothing.
+    fn library(&self) -> Option<Library> {
+        None
+    }
+    /// Every library the stored account's server offers.
+    async fn libraries(&self) -> Result<Vec<Library>> {
+        anyhow::bail!("this provider has no libraries")
+    }
+    /// Keeps the library the stored account reads, or the whole server with `None`. It only
+    /// stores the choice, so a live session applies it once it is rebuilt.
+    fn choose_library(&self, _library: Option<Library>) -> Result<()> {
+        anyhow::bail!("this provider has no libraries")
+    }
 
     /// Forgets whatever the provider remembers about its last scan, so the next one reads
     /// everything again. Only a provider that scans files has anything to forget, and only a

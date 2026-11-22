@@ -13,7 +13,7 @@ use metal::{
 use music::Album;
 use tokio::task::AbortHandle;
 
-use crate::{AppSettings, Io, Origin, Session, SessionEvent, Sonora, join};
+use crate::{Io, Origin, Scrobbling, Session, SessionEvent, Sonora, join};
 
 const BROWSER_TICK: Duration = Duration::from_millis(250);
 const BROWSER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -74,7 +74,7 @@ pub struct MetalDiscovery {
     pub reader_error: Option<MetalFetchError>,
     client: Client,
     session: Entity<Session>,
-    settings: Entity<AppSettings>,
+    scrobbling: Entity<Scrobbling>,
     io: Io,
     loaded: bool,
     follows_today: bool,
@@ -114,7 +114,7 @@ impl MetalDiscovery {
     /// Creates a shared client without starting any network work until Discover opens.
     pub fn new(
         session: Entity<Session>,
-        settings: Entity<AppSettings>,
+        scrobbling: Entity<Scrobbling>,
         io: Io,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -130,15 +130,10 @@ impl MetalDiscovery {
             }
         })
         .detach();
-        cx.observe(&settings, |this, settings, cx| {
-            let account = lastfm_album_account(settings.read(cx));
+        cx.observe(&scrobbling, |this, scrobbling, cx| {
+            let account = lastfm_album_account(scrobbling.read(cx));
             let albums_used = this.album_library.is_some() || this.album_plays_loading;
-            let user = settings
-                .read(cx)
-                .scrobbling()
-                .get("lastfm")
-                .map(|account| account.name.clone())
-                .unwrap_or_default();
+            let user = scrobbling.read(cx).account("lastfm").name;
             if user != this.user {
                 let used = this.loaded || this.loading;
                 this.cancel();
@@ -162,7 +157,7 @@ impl MetalDiscovery {
         })
         .detach();
         let to = jiff::Zoned::now().date();
-        let album_account = lastfm_album_account(settings.read(cx));
+        let album_account = lastfm_album_account(scrobbling.read(cx));
         let from = to
             .checked_sub(jiff::Span::new().days(6))
             .expect("recent date is representable");
@@ -186,7 +181,7 @@ impl MetalDiscovery {
             reader_error: None,
             client: Client::new(storage::Cache::standard()),
             session,
-            settings,
+            scrobbling,
             io,
             loaded: false,
             follows_today: true,
@@ -237,12 +232,12 @@ impl MetalDiscovery {
         if self.listening_loading {
             return;
         }
-        let Some((user, _)) = lastfm_album_account(self.settings.read(cx)) else {
+        let Some((user, _)) = lastfm_album_account(self.scrobbling.read(cx)) else {
             return;
         };
         self.listening_loading = true;
         self.listening_failed = false;
-        self.user = self.settings.read(cx).scrobbling()["lastfm"].name.clone();
+        self.user = self.scrobbling.read(cx).account("lastfm").name;
         let client = self.client.clone();
         let request = self.io.spawn(async move {
             Ok((
@@ -489,18 +484,13 @@ impl MetalDiscovery {
         }
         self.history_loading = true;
         self.history_error = None;
-        let account = self.settings.read(cx).scrobbling().get("lastfm").cloned();
-        self.user = account
-            .as_ref()
-            .map(|account| account.name.clone())
-            .unwrap_or_default();
+        let account = self.scrobbling.read(cx).account("lastfm");
+        self.user = account.name.clone();
         let client = self.client.clone();
         let request = self.io.spawn(async move {
-            let Some(account) =
-                account.filter(|account| !account.name.is_empty() && !account.key.is_empty())
-            else {
+            if account.name.is_empty() || account.key.is_empty() {
                 return Ok(History::default());
-            };
+            }
             let seed = dirs::home_dir().map(|home| home.join(".hermes/cache/lastfm_artists.json"));
             client.history(&account.name, &account.key, seed).await
         });
@@ -757,16 +747,10 @@ impl MetalDiscovery {
         if self.enriching || self.history_loading {
             return;
         }
-        let Some(account) = self
-            .settings
-            .read(cx)
-            .scrobbling()
-            .get("lastfm")
-            .cloned()
-            .filter(|account| !account.key.is_empty())
-        else {
+        let account = self.scrobbling.read(cx).account("lastfm");
+        if account.key.is_empty() {
             return;
-        };
+        }
         let mut bands = Vec::new();
         let mut seen = HashSet::new();
         for release in &self.releases {
@@ -1702,12 +1686,10 @@ fn browser_required(error: &anyhow::Error) -> bool {
 }
 
 /// Only the username and public API key are needed for personal album metadata.
-fn lastfm_album_account(settings: &AppSettings) -> Option<(String, String)> {
-    settings
-        .scrobbling()
-        .get("lastfm")
-        .filter(|account| !account.name.is_empty() && !account.key.is_empty())
-        .map(|account| (account.name.to_lowercase(), account.key.clone()))
+fn lastfm_album_account(scrobbling: &Scrobbling) -> Option<(String, String)> {
+    let account = scrobbling.account("lastfm");
+    (!account.name.is_empty() && !account.key.is_empty())
+        .then(|| (account.name.to_lowercase(), account.key))
 }
 
 fn timestamp() -> u64 {

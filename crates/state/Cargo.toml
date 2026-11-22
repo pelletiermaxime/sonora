@@ -4,13 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-bundled-sqlite = [
-    "rusqlite/bundled",
-    "music/bundled-sqlite",
-    "storage/bundled-sqlite",
-]
-
 [dependencies]
 anyhow.workspace = true
 cli.workspace = true
@@ -27,6 +20,7 @@ image.workspace = true
 log.workspace = true
 jiff.workspace = true
 metal.workspace = true
+logic.workspace = true
 moka.workspace = true
 music.workspace = true
 notify.workspace = true

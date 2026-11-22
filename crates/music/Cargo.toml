@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-bundled-sqlite = ["rusqlite/bundled", "storage/bundled-sqlite"]
 # The host for the Widevine CDM, which Apple Music playback needs. Off by default: it compiles a
 # C++ shim, so it wants a C++ compiler, and nothing else in the crate wants it.
 widevine = ["widevine/cdm"]
@@ -19,6 +18,7 @@ blowfish.workspace = true
 bytes.workspace = true
 cbc.workspace = true
 fastrand.workspace = true
+sha1.workspace = true
 flate2.workspace = true
 cpal.workspace = true
 futures.workspace = true

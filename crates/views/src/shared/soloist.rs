@@ -4,15 +4,13 @@
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, FontWeight, Render, SharedString, Window, div,
-};
+use gpui::{AnyElement, App, Context, Entity, FocusHandle, Render, SharedString, Window, div};
 use i18n::t;
 use music::soloist::{DASHBOARD, DEVICE, TERMS};
 use state::{Soloist, SoloistProblem, SoloistState, SoloistStep, Sonora};
 use ui::{
-    ActiveTheme as _, Button, Dismiss, FORM_CONTEXT, Input, Modal, Notice, Spinner, Submit, Text,
-    spoken,
+    ActiveTheme as _, Button, Dismiss, FORM_CONTEXT, Field, Form, Input, Modal, Notice, Spinner,
+    Submit, Text,
 };
 
 use crate::shared::steps::{progress, steps};
@@ -36,9 +34,9 @@ impl SoloistSetup {
         let soloist = Sonora::global(cx).soloist.clone();
         cx.observe(&soloist, |_, _, cx| cx.notify()).detach();
         let key = cx.new(|cx| {
-            Input::new("soloist-key-hint", cx)
+            Input::new("common-api-key", cx)
                 .masked()
-                .name("soloist-key-hint")
+                .name("common-api-key")
         });
         cx.observe(&key, |_, _, cx| cx.notify()).detach();
         Self {
@@ -107,7 +105,7 @@ impl SoloistSetup {
             progress(
                 [
                     t!("soloist-step-download"),
-                    t!("soloist-step-key"),
+                    t!("common-api-key"),
                     t!("soloist-step-pair"),
                 ],
                 match step {
@@ -175,7 +173,11 @@ impl SoloistSetup {
                         )
                         .into_any_element(),
                 );
-                body.push(self.key.clone().into_any_element());
+                body.push(
+                    Form::new("soloist-key-form")
+                        .field(Field::new(&self.key, cx))
+                        .into_any_element(),
+                );
             }
             SoloistStep::Pairing => {
                 body.push(
@@ -186,7 +188,6 @@ impl SoloistSetup {
                     ])
                     .into_any_element(),
                 );
-                body.push(device(cx));
                 // said only once pairing has waited a while, when a firewall is the likely cause
                 if let Some(port) = self.soloist.read(cx).blocked_port() {
                     // as text, so no locale groups the digits of a port number
@@ -229,7 +230,7 @@ impl Render for SoloistSetup {
             SoloistStep::Pairing => modal.action(
                 Button::new("soloist-back")
                     .ghost()
-                    .label(t!("soloist-back"))
+                    .label(t!("nav-back"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.soloist.update(cx, |soloist, cx| soloist.back(cx));
                     })),
@@ -239,7 +240,7 @@ impl Render for SoloistSetup {
                     Button::new("soloist-cancel")
                         .ghost()
                         .label(match step {
-                            SoloistStep::Consent => t!("soloist-later"),
+                            SoloistStep::Consent => t!("common-not-now"),
                             _ => t!("common-cancel"),
                         })
                         .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
@@ -331,28 +332,5 @@ fn waiting(id: &'static str, text: SharedString, cx: &App) -> AnyElement {
         .text_color(theme.muted_foreground)
         .child(Spinner::new(SharedString::from(format!("{id}-spinner"))))
         .child(text)
-        .into_any_element()
-}
-
-/// The name to look for on the device list, set large in a panel of its own, with the wait
-/// under it.
-fn device(cx: &App) -> AnyElement {
-    let theme = *cx.theme();
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap_2()
-        .p(theme.metrics.pad * 1.5)
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.secondary)
-        .child(
-            spoken("soloist-device", DEVICE)
-                .text_size(theme.text(Text::Title))
-                .font_weight(FontWeight::BOLD),
-        )
-        .child(waiting("soloist-pairing", t!("soloist-pair-waiting"), cx))
         .into_any_element()
 }

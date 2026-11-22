@@ -4,23 +4,24 @@ use std::rc::Rc;
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Pixels, Point, Render, ScrollHandle,
+    AnyElement, App, ClickEvent, Context, Entity, FontWeight, Pixels, Point, Render, ScrollHandle,
     ScrollWheelEvent, SharedString, WeakEntity, Window, div, linear_color_stop, linear_gradient,
     point, px, relative,
 };
 
 use crate::chrome::Chrome;
 use crate::chrome::metal::DiscographyTab;
+use crate::shared::blend::Joined;
 use crate::shared::cells;
 use i18n::t;
 use music::{SavedArtist, Track};
-use state::{AppSettings, ArtistDetail, Io, MetalArtist, Origin, Playback, Sonora};
+use state::{AppSettings, ArtistDetail, Io, MetalArtist, Origin, Playback, Shelf, Sonora};
 use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
     Artwork, Button, Card, Deck, MIN_CONTENT, Modal, Mode, Notice, Pending, Picker, Pin, PinKind,
     Popovers, Popup, Scrollbar, Scroller, TabBar, TableDelegate, TableEvent, TableState, Text,
-    effects, scrolled, snapped, table,
+    effects, scrolled, snapped, spoken, table,
 };
 
 use crate::chrome::tools;
@@ -28,7 +29,7 @@ use crate::chrome::{Toolbar, Tooled};
 use crate::shared::about::{AboutArtist, about_modal};
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards::{self, ReleaseFilter};
-use crate::shared::confirm::Confirm;
+use crate::shared::cover_viewer::CoverViewer;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
 use crate::shared::menus::{ItemMenu, artist_menu};
 use crate::shared::page;
@@ -43,9 +44,6 @@ const LISTED: usize = 5;
 const LISTED_MAX: usize = 10;
 /// The favorites dialog gives two song columns enough room for titles and controls.
 const FAVORITES_WIDTH: f32 = 5.;
-/// The width of the `border_1` around the popular table, which pushes its rows and head below
-/// the box the page measures the scroll from.
-const TABLE_BORDER: Pixels = px(1.);
 /// The least and the most room the banner adds above the hero, as shares of the cover's edge.
 /// In between, the banner box keeps `BANNER_BOX` as its aspect, so a narrow page lifts the
 /// hero less.
@@ -103,9 +101,9 @@ struct ArtistTracks {
 }
 
 impl Tracks for ArtistTracks {
-    fn tracks<'a>(&self, cx: &'a App) -> &'a [Track] {
+    fn tracks<'a>(&self, cx: &'a App) -> Joined<'a, Track> {
         let tracks = self.detail.read(cx).tracks();
-        &tracks[..self.shown.get().min(tracks.len())]
+        tracks[..self.shown.get().min(tracks.len())].into()
     }
 
     fn is_loading(&self, cx: &App) -> bool {
@@ -157,6 +155,7 @@ pub(crate) struct ArtistView {
     release_tile: Pixels,
     /// The recommendation rails under the releases, in page order: appears-on.
     rails: Vec<Rail>,
+    cover_viewer: Entity<CoverViewer>,
 }
 
 impl ArtistView {
@@ -242,7 +241,10 @@ impl ArtistView {
             if router::trail(cx).read(cx).current()
                 == router::Destination::Artist(id.clone().into())
             {
-                router::replace(router::Destination::Local(router::LibraryTab::Artists), cx);
+                router::replace(
+                    router::Destination::Library(router::LibraryTab::Artists),
+                    cx,
+                );
             }
         })
         .detach();
@@ -321,6 +323,9 @@ impl ArtistView {
 
         let me = cx.entity();
         let toolbar = Toolbar::tooled(&me, cx);
+        let cover_viewer = cx.new(CoverViewer::new);
+        // The hero portrait hides while the viewer shows it, until it lands back on it.
+        cx.observe(&cover_viewer, |_, _, cx| cx.notify()).detach();
 
         Self {
             popular: Rc::new(detail.read(cx).tracks().to_vec()),
@@ -355,6 +360,7 @@ impl ArtistView {
             release_columns: 0,
             release_tile: Pixels::ZERO,
             rails: Vec::new(),
+            cover_viewer,
         }
     }
 
@@ -420,6 +426,10 @@ impl ArtistView {
                 let value = cells::count(count);
                 t!("artist-monthly-listeners", count = count, value = &value)
             });
+        let followers = artist.and_then(|artist| artist.followers).map(|count| {
+            let value = cells::count(count);
+            t!("artist-followers", count = count, value = &value)
+        });
         let discovery = Sonora::global(cx).metal.read(cx);
         let plays = artist
             .filter(|_| !discovery.history.source.is_empty())
@@ -436,9 +446,9 @@ impl ArtistView {
             })
             .map(|band| band.genre.clone())
             .filter(|genre| !genre.is_empty());
-        let has_meta = listeners.is_some() || plays.is_some() || genre.is_some();
-        let meta = HeroMetaStrip::new()
-            .when_some(listeners, |meta, listeners| meta.text(listeners))
+        let has_meta =
+            listeners.is_some() || followers.is_some() || plays.is_some() || genre.is_some();
+        let meta = artist_meta(listeners, followers)
             .when_some(plays, |meta, plays| {
                 meta.text(t!("metal-personal-plays", count = plays))
             })
@@ -480,10 +490,26 @@ impl ArtistView {
             .id()
             .map(|id| Pin::new(PinKind::Artist, id, title.clone()).cover(cover.clone()));
 
+        let view_cover = cover.clone().map(|cover| {
+            let view = self.me.clone();
+            let title = title.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| {
+                    let owner = this.detail.read(cx).id().map(str::to_owned);
+                    this.cover_viewer.update(cx, |viewer, cx| {
+                        viewer.open(owner, title.clone(), cover.clone(), true, cx);
+                    });
+                })
+                .ok();
+            }
+        });
+
         PageHero::new("artist-hero", title)
             .pending(artist.is_none() && self.detail.read(cx).is_loading())
             .pin(pin)
             .cover(cover)
+            .cover_away(self.cover_viewer.read(cx).is_open())
+            .when_some(view_cover, |hero, on_cover| hero.on_cover_click(on_cover))
             .when(has_meta, |hero| hero.meta(meta))
             .actions(actions)
             .circle()
@@ -491,12 +517,21 @@ impl ArtistView {
     }
 
     /// The artist's banner behind the hero, `height` tall and bled past the page's `inset` to
-    /// its edges, with the hero's top `hero` below its own. It is dimmed throughout and stays sharp
-    /// above the hero, then blurs, darkens and fades harder until it is gone at its bottom.
+    /// its edges, with the hero's top `hero` below its own. It spans the side `margin` of a wide
+    /// window too, so its parent has to be as wide as the content area, since its blurs never
+    /// reach far past that parent. It is dimmed throughout and stays sharp above the hero, then
+    /// blurs, darkens and fades harder until it is gone at its bottom.
     /// Without a banner the portrait stands in, blurred to a wash of its colours so it does not
     /// repeat the cover beside it. None when the artist has neither, or has only a portrait
     /// while blurs are off.
-    fn banner(&self, inset: Pixels, height: Pixels, hero: Pixels, cx: &App) -> Option<AnyElement> {
+    fn banner(
+        &self,
+        inset: Pixels,
+        margin: Pixels,
+        height: Pixels,
+        hero: Pixels,
+        cx: &App,
+    ) -> Option<AnyElement> {
         let artist = self.detail.read(cx).artist()?;
         let (url, wash) = match &artist.banner {
             Some(banner) => (banner.clone(), None),
@@ -507,7 +542,7 @@ impl ArtistView {
         // frame later, so a window being resized would show the box's edge past the picture.
         // Everything is drawn a little wider than the box, centred in it, and the box clips the
         // rest.
-        let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
+        let width = (self.width + (inset + margin) * 2.) * (1. + BANNER_SLACK);
         let theme = cx.theme();
         let shade = div()
             .absolute()
@@ -638,12 +673,13 @@ impl ArtistView {
                 false => heart,
             }
             .on_click(move |_, _, cx| {
-                match saved && !Confirm::unstarring(&target.id, cx) {
-                    true => Confirm::artists(vec![target.clone()], cx),
-                    false => {
-                        library.update(cx, |library, cx| library.heart_artist(target.clone(), cx));
+                // Over a catalog the heart only unstars, so it is the way back and needs no toast.
+                library.update(cx, |library, cx| {
+                    match saved && !library.shape(Shelf::of(&target.id)).is_catalog() {
+                        true => library.toggle_artist(target.clone(), cx),
+                        false => library.heart_artist(target.clone(), cx),
                     }
-                }
+                });
             }),
         )
     }
@@ -946,8 +982,8 @@ impl ArtistView {
         Some(
             Button::new("artist-releases-more")
                 .label(match expanded {
-                    true => t!("artist-releases-less"),
-                    false => t!("artist-releases-more"),
+                    true => t!("common-show-less"),
+                    false => t!("common-show-all"),
                 })
                 .trailing(chevron(expanded))
                 .small()
@@ -1030,8 +1066,8 @@ impl ArtistView {
         let more = (self.popular.len() > LISTED).then(|| {
             Button::new("artist-popular-more")
                 .label(match expanded {
-                    true => t!("artist-popular-less"),
-                    false => t!("artist-popular-more"),
+                    true => t!("common-show-less"),
+                    false => t!("common-show-all"),
                 })
                 .trailing(chevron(expanded))
                 .small()
@@ -1675,6 +1711,14 @@ impl Tooled for ArtistView {
 
 impl Render for ArtistView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let artist = self.detail.read(cx);
+        let owner = artist.id().map(str::to_owned);
+        let cover = artist
+            .artist()
+            .and_then(|artist| artist.cover_large.clone());
+        self.cover_viewer.update(cx, |viewer, cx| {
+            viewer.close_if_stale(owner.as_deref(), cover.as_deref(), window, cx)
+        });
         if let Some(failure) = self.failure(cx) {
             return div()
                 .id("artist-failure")
@@ -1704,8 +1748,7 @@ impl Render for ArtistView {
         }
         if self.mode == Mode::List {
             self.table.claim(cx);
-            let mut viewport = page::viewport(&scroll, inset, window);
-            viewport.top = (viewport.top - TABLE_BORDER).max(Pixels::ZERO);
+            let viewport = page::past_border(page::viewport(&scroll, inset, window, cx));
             self.table
                 .update(cx, |table, _| table.set_viewport(viewport));
         }
@@ -1734,14 +1777,15 @@ impl Render for ArtistView {
             .read(cx)
             .artist()
             .is_some_and(|artist| artist.banner.is_some());
+        let margin = crate::chrome::Chrome::margin(window, cx);
         let rise = match banner_shown {
-            true => ((self.width + inset * 2.) / BANNER_BOX - inset - cover)
+            true => ((self.width + (inset + margin) * 2.) / BANNER_BOX - inset - cover)
                 .max(cover * BANNER_RISE_LEAST)
                 .min(cover * BANNER_RISE_MOST),
             false => cover * BANNER_RISE_WASH,
         };
         let rise = snapped(rise, window);
-        let banner = self.banner(inset, inset + rise + cover, inset + rise, cx);
+        let banner = self.banner(inset, margin, inset + rise + cover, inset + rise, cx);
         let tracks = match self.mode {
             Mode::Grid => self.popular(cx),
             Mode::List => self.listed(cx),
@@ -1769,6 +1813,7 @@ impl Render for ArtistView {
             .child(
                 div()
                     .relative()
+                    .px(margin)
                     .pt(rise)
                     .children(banner)
                     .child(head)
@@ -1788,12 +1833,16 @@ impl Render for ArtistView {
                         )
                     }),
             )
-            .child(tracks)
-            .child(self.metal_discography(cx))
-            .children(grid)
-            .child(self.empath_similar(cx))
-            .children(rails)
-            .children(about)
+            .child(
+                div()
+                    .px(margin)
+                    .child(tracks)
+                    .child(self.metal_discography(cx))
+                    .children(grid)
+                    .child(self.empath_similar(cx))
+                    .children(rails)
+                    .children(about),
+            )
             .when(release_padding > Pixels::ZERO, |this| {
                 this.child(div().h(release_padding).flex_none())
             });
@@ -1813,7 +1862,22 @@ impl Render for ArtistView {
                 cx,
             ))
             .children(self.favorites_dialog(window, cx))
+            .child(self.cover_viewer.clone())
             .into_any_element()
+    }
+}
+
+/// The facts under the artist's name: the listener count, then the follower count. The follower
+/// count takes its own id, so it keeps the same id whether or not a listener count is shown.
+fn artist_meta(listeners: Option<SharedString>, followers: Option<SharedString>) -> HeroMetaStrip {
+    let strip = HeroMetaStrip::new();
+    let strip = match listeners {
+        Some(listeners) => strip.text(listeners),
+        None => strip,
+    };
+    match followers {
+        Some(followers) => strip.item(spoken("artist-followers", followers)),
+        None => strip,
     }
 }
 

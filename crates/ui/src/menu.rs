@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Div, ElementId, Entity,
-    FocusHandle, Focusable as _, Global, Interactivity, MouseButton, MouseClickEvent,
-    MouseDownEvent, Pixels, Point, ScrollWheelEvent, SharedString, Size, Stateful, StyleRefinement,
-    Window, anchored, deferred, div, point, px, svg,
+    AbsoluteLength, Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, DefiniteLength,
+    Div, ElementId, Entity, FocusHandle, Focusable as _, Global, Interactivity, Length,
+    MouseButton, MouseClickEvent, MouseDownEvent, Pixels, Point, ScrollWheelEvent, SharedString,
+    Size, Stateful, StyleRefinement, Window, anchored, deferred, div, phi, point, px, svg,
 };
 
 use crate::Artwork;
@@ -28,7 +28,7 @@ use crate::tooltip::{Perch, Tipped as _};
 
 pub const MENU_CONTEXT: &str = "Menu";
 
-const ESCAPE_KEY: &str = "escape";
+pub(crate) const ESCAPE_KEY: &str = "escape";
 
 const SUBMENU_CLOSE_DELAY: Duration = Duration::from_millis(160);
 const SUBMENU_FALLBACK_WIDTH: Pixels = px(236.);
@@ -1153,6 +1153,7 @@ impl RenderOnce for Menu {
                 .children(rows)
                 .into_any_element(),
         };
+        let scrolls = scrollbar.is_some();
         let body = match scrollbar {
             Some(scrollbar) => div()
                 .relative()
@@ -1195,6 +1196,25 @@ impl RenderOnce for Menu {
         let width = overrides.size.width.take();
         let floor = overrides.min_size.width.take();
         let ceiling = overrides.max_size.height.take();
+        // A panel that scrolls never runs past the window. Under a trigger it may grow as far
+        // as the roomier side allows, since the anchor moves it above when it fits there better.
+        let room = trigger
+            .as_ref()
+            .and_then(Trigger::bounds)
+            .filter(|_| scrolls && beside.is_none())
+            .map(|bounds| {
+                let below = window.viewport_size().height - bounds.bottom() - WINDOW_MARGIN;
+                let above = bounds.top() - WINDOW_MARGIN;
+                below.max(above) - TRIGGER_GAP
+            });
+        let ceiling = match (ceiling, room) {
+            (
+                Some(Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(fixed)))),
+                Some(room),
+            ) => Some(fixed.min(room).into()),
+            (None, Some(room)) => Some(room.into()),
+            (ceiling, _) => ceiling,
+        };
         let right = overrides.inset.left.is_none() && overrides.inset.right.is_some();
         let corner = match (right, above && trigger.is_none()) {
             (true, false) => Anchor::TopRight,
@@ -1242,6 +1262,11 @@ impl RenderOnce for Menu {
             .when_some(name, |this, name| this.aria_label(name))
             .flex()
             .flex_col()
+            // the menu sets its own type size and leading, since one opened from a large search
+            // field or a page header would otherwise take that text and draw bigger or shorter
+            // rows than everywhere else
+            .text_size(theme.text(crate::Text::Body))
+            .line_height(phi())
             .p_1()
             .rounded(theme.radius)
             .border_1()
@@ -1458,4 +1483,11 @@ fn step(
         scrollbar.read(cx).scroll().scroll_to_item(rows[place]);
     }
     search.input.update(cx, |_, cx| cx.notify());
+}
+
+/// Whether a menu is open and waiting for escape to close it, so a dialog under it leaves that
+/// escape to the menu.
+pub(crate) fn menu_open(cx: &App) -> bool {
+    cx.try_global::<Escape>()
+        .is_some_and(|escape| escape.0.borrow().is_some())
 }

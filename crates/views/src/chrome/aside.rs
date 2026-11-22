@@ -1,14 +1,14 @@
 use std::cell::Cell;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::rc::Rc;
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, path::PathBuf};
 
 use gpui::prelude::*;
 
 use gpui::accesskit::{Role, Toggled};
 use gpui::{
-    Animation, AnimationExt as _, App, Bounds, Context, Div, DragMoveEvent, Entity, FontWeight,
-    MouseDownEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
+    Animation, AnimationExt as _, App, Bounds, Context, Div, DragMoveEvent, Entity, ExternalPaths,
+    FontWeight, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
     SharedString, Size, SpringConfig, SpringState, Task, UniformListScrollHandle, Window, canvas,
     div, ease_in_out, px, relative, size, svg, uniform_list,
 };
@@ -79,8 +79,9 @@ const LAG_TRAIL: f32 = 0.9;
 const LAG_STAGGER: f32 = 0.35;
 const LAG_LEAST: Pixels = px(0.05);
 const LAG_STALL: f32 = 0.064;
-// Below this a blur is not worth a layer of its own.
-const HAZE_LEAST: Pixels = px(0.05);
+/// Below this a blur is not worth a layer of its own. The smallest `HAZE_STEP` falls under it,
+/// since a quarter of a pixel cannot be seen and every distinct blur costs a whole layer.
+const HAZE_LEAST: Pixels = px(0.3);
 /// The step a row's blur is rounded to. Neighbouring rows that land on the same step share one
 /// offscreen layer in the renderer, where each distinct blur costs a layer of its own.
 const HAZE_STEP: Pixels = px(0.25);
@@ -166,6 +167,12 @@ struct RowLook {
     queued: bool,
     /// Whether the row is on another device's queue, which this app shows but cannot change.
     remote: bool,
+}
+
+/// What a drop onto the queue carried: drag within the app, or files from another program.
+enum Dragged<'a> {
+    Pin(&'a DraggedPin),
+    Paths(&'a [PathBuf]),
 }
 
 /// The credit under a sheet, resolved once for the answer it names and the language it was read
@@ -294,6 +301,9 @@ impl Aside {
         })
         .detach();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
+        // the lyrics follow the position as it moves
+        let ticks = playback.read(cx).ticks().clone();
+        cx.observe(&ticks, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
@@ -640,24 +650,55 @@ impl Aside {
         cx.notify();
     }
 
+    fn set_gap(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        position: Point<Pixels>,
+        row: usize,
+        from: Option<Spot>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(gap) = drop_gap(bounds, position, row) else {
+            return;
+        };
+        let gap = match from {
+            Some(held) => (gap != held.index && gap != held.index + 1).then_some(gap),
+            None => Some(gap),
+        };
+        if self.drop_gap != gap {
+            self.drop_gap = gap;
+            cx.notify();
+        }
+    }
+
     fn enqueue(&mut self, pin: &Pin, gap: Option<usize>, cx: &mut Context<Self>) {
         self.playback
             .update(cx, |playback, cx| playback.enqueue_pin(pin, gap, cx));
     }
 
+    fn enqueue_paths(&mut self, paths: &[PathBuf], gap: Option<usize>, cx: &mut Context<Self>) {
+        self.playback.update(cx, |playback, cx| {
+            playback.enqueue_paths(paths.to_vec(), gap, cx)
+        });
+    }
+
     /// Applies a drop anywhere on the queue at the gap the marker shows, since the marker reaches
     /// past a row into the header and spacing around it. A track moved within the queue stays put
-    /// when no gap is marked, and a track dragged in from elsewhere then goes to the end.
-    fn land(&mut self, dragged: &DraggedPin, cx: &mut Context<Self>) {
+    /// when no gap is marked, and a track dragged in from elsewhere then goes to the end. Files
+    /// from another program go in at the marked gap, or at the end when none is marked.
+    fn land(&mut self, dropped: Dragged<'_>, cx: &mut Context<Self>) {
         let gap = self.drop_gap.take();
-        match (dragged.spot(QUEUE), gap) {
-            (Some(held), Some(gap)) => self.queue.update(cx, |queue, cx| {
-                if queue.revision() == held.revision {
-                    queue.move_upcoming_to_gap(held.index, gap, cx);
-                }
-            }),
-            (Some(_), None) => {}
-            (None, gap) => self.enqueue(&dragged.pin, gap, cx),
+        match dropped {
+            Dragged::Pin(dragged) => match (dragged.spot(QUEUE), gap) {
+                (Some(held), Some(gap)) => self.queue.update(cx, |queue, cx| {
+                    if queue.revision() == held.revision {
+                        queue.move_upcoming_to_gap(held.index, gap, cx);
+                    }
+                }),
+                (Some(_), None) => {}
+                (None, gap) => self.enqueue(&dragged.pin, gap, cx),
+            },
+            Dragged::Paths(paths) => self.enqueue_paths(paths, gap, cx),
         }
         cx.notify();
     }
@@ -800,20 +841,20 @@ impl Aside {
         .when_some(queue_index, |this, target| {
             this.on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<DraggedPin>, _, cx| {
-                    let Some(gap) = drop_gap(event.bounds, event.event.position, target) else {
-                        return;
-                    };
-                    let gap = match event.drag(cx).spot(QUEUE) {
-                        Some(held) => (gap != held.index && gap != held.index + 1).then_some(gap),
-                        None => Some(gap),
-                    };
-                    if this.drop_gap != gap {
-                        this.drop_gap = gap;
-                        cx.notify();
-                    }
+                    this.set_gap(
+                        event.bounds,
+                        event.event.position,
+                        target,
+                        event.drag(cx).spot(QUEUE),
+                        cx,
+                    );
                 }),
             )
-            .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)))
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    this.set_gap(event.bounds, event.event.position, target, None, cx);
+                },
+            ))
         })
         .when_some(pin, |this, pin| match queue_index {
             Some(index) => this.pin_from(pin, Spot::new(QUEUE, index).revision(queue_revision)),
@@ -968,6 +1009,17 @@ impl Aside {
         Some(self.raised(perch, cx))
     }
 
+    /// The floating follow and return buttons of a fullscreen aside, which leaves them out of
+    /// its own render. The fullscreen player draws them over the panel itself, so they stay
+    /// above the visualizer it lays over the panel's text.
+    pub(crate) fn perches(&self, window: &Window, cx: &mut Context<Self>) -> Vec<Div> {
+        let sections = self.playback.read(cx).shown_queue(cx).sections;
+        self.follow(cx)
+            .into_iter()
+            .chain(self.recall(&sections, window, cx))
+            .collect()
+    }
+
     /// Keeps floating controls above the workspace player bar and the strip over it, or above
     /// the fullscreen transport.
     fn raised(&self, perch: Div, cx: &App) -> Div {
@@ -1120,10 +1172,18 @@ impl Aside {
         let row_width = scroll.bounds().size.width - sheet_padding * 2.;
         // Both voices and wrapped phrases share the same inset from either panel edge.
         let wrap_width = (row_width - verse_pad * 2.).max(Pixels::ZERO);
-        if self.lyrics_wrap_width != Some(wrap_width) || self.lyrics_wrap_size != Some(wrap_size) {
+        let rewrapped =
+            self.lyrics_wrap_width != Some(wrap_width) || self.lyrics_wrap_size != Some(wrap_size);
+        if rewrapped {
             self.lyrics_wrap_width = Some(wrap_width);
             self.lyrics_wrap_size = Some(wrap_size);
             self.forget_measurements();
+            // A sheet following the sung line puts that line back in its place once the rows
+            // have their new heights. A sheet the listener scrolled is held by its top instead.
+            if self.pinned {
+                self.aiming = true;
+                self.placing = true;
+            }
             window.request_animation_frame();
         }
 
@@ -1673,6 +1733,8 @@ impl Aside {
         };
 
         let sheet = Scroller::new("lyrics", &self.verse_bar)
+            .hold_while(!self.pinned)
+            .reflowed(rewrapped)
             .bottom_inset(self.bottom(cx))
             .when(lines.is_some(), Scroller::manual_presentation)
             .when(lines.is_some(), |this| {
@@ -1914,8 +1976,7 @@ impl Aside {
             Whence::Playlist => Destination::Playlist(id),
             Whence::Artist => Destination::Artist(id),
             Whence::Radio => Destination::Song(id),
-            Whence::Saved => Destination::Library(LibraryTab::Songs),
-            Whence::Local => Destination::Local(LibraryTab::Songs),
+            Whence::Saved | Whence::Local => Destination::Library(LibraryTab::Songs),
         };
         let name = match origin.whence {
             Whence::Saved => match Sonora::global(cx).library.read(cx).shape(Shelf::Streaming) {
@@ -2056,6 +2117,13 @@ impl Render for Aside {
                     cx.notify();
                 }
             }))
+            .on_drag_move(
+                cx.listener(|this, _: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    if this.drop_gap.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .when(self.titled || self.tab == SideTab::Queue, |this| {
                 this.child(self.header(&sections, remote, window, cx))
             })
@@ -2068,9 +2136,14 @@ impl Render for Aside {
                     .flex_1()
                     .min_h_0()
                     .when(self.tab == SideTab::Queue && !remote, |this| {
-                        this.on_drop(
-                            cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)),
-                        )
+                        this.on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| {
+                            this.land(Dragged::Pin(dragged), cx)
+                        }))
+                        .on_drop(cx.listener(
+                            |this, dragged: &ExternalPaths, _, cx| {
+                                this.land(Dragged::Paths(dragged.paths()), cx)
+                            },
+                        ))
                     })
                     .when(self.tab == SideTab::Lyrics, |this| {
                         this.child(self.verses(window, cx)).child(self.witness())
@@ -2106,8 +2179,10 @@ impl Render for Aside {
                             ),
                         )
                     })
-                    .children(self.follow(cx))
-                    .children(self.recall(&sections, window, cx)),
+                    .when(self.titled, |this| {
+                        this.children(self.follow(cx))
+                            .children(self.recall(&sections, window, cx))
+                    }),
             )
             .children(self.menu(cx))
     }
